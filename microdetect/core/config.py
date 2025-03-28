@@ -1,10 +1,14 @@
 from pathlib import Path
-from typing import Optional
-from pydantic_settings import BaseSettings
+from typing import Optional, Dict, Any, Set
 import os
+import dotenv
+from dataclasses import dataclass, field
 
+# Carregar variáveis de ambiente do arquivo .env se existir
+dotenv.load_dotenv(".env")
 
-class Settings(BaseSettings):
+@dataclass
+class Settings:
     # Configurações básicas
     API_V1_STR: str = "/api/v1"
     PROJECT_NAME: str = "MicroDetect"
@@ -31,29 +35,39 @@ class Settings(BaseSettings):
     DEBUG: bool = False
 
     # Configurações de segurança
-    SECRET_KEY: str = "your-secret-key-here"  # Em produção, use variável de ambiente
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
+    SECRET_KEY: str = os.getenv("SECRET_KEY", "your-secret-key-here")
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "30"))
 
     # Configurações de upload
     MAX_UPLOAD_SIZE: int = 10 * 1024 * 1024  # 10MB
-    ALLOWED_IMAGE_TYPES: set[str] = {"image/jpeg", "image/png", "image/tiff"}
+    ALLOWED_IMAGE_TYPES: Set[str] = field(default_factory=lambda: {"image/jpeg", "image/png", "image/tiff"})
 
     # Configurações do banco de dados
-    DATABASE_URL: str = f"sqlite:///{HOME_DIR}/microdetect.db"
+    DATABASE_URL: str = os.getenv("DATABASE_URL", "")
+    
+    def __post_init__(self):
+        # Configurar DATABASE_URL se não foi definido por variável de ambiente
+        if not self.DATABASE_URL:
+            self.DATABASE_URL = f"sqlite:///{self.HOME_DIR}/microdetect.db"
+            
+        # Criar diretórios necessários se não existirem
+        self.HOME_DIR.mkdir(exist_ok=True)
+        self.DATA_DIR.mkdir(exist_ok=True)
+        self.DATASETS_DIR.mkdir(exist_ok=True)
+        self.MODELS_DIR.mkdir(exist_ok=True)
+        self.IMAGES_DIR.mkdir(exist_ok=True)
+        self.GALLERY_DIR.mkdir(exist_ok=True)
+        self.TEMP_DIR.mkdir(exist_ok=True)
+        self.STATIC_DIR.mkdir(exist_ok=True)
 
     # Configurações do modelo YOLO
     YOLO_MODEL_PATH: Path = MODELS_DIR / "best.pt"
-    CONFIDENCE_THRESHOLD: float = 0.5
-    IOU_THRESHOLD: float = 0.45
+    CONFIDENCE_THRESHOLD: float = float(os.getenv("CONFIDENCE_THRESHOLD", "0.5"))
+    IOU_THRESHOLD: float = float(os.getenv("IOU_THRESHOLD", "0.45"))
 
     # Configurações de processamento
     MAX_WORKERS: int = os.cpu_count() or 4
-    BATCH_SIZE: int = 32
-
-    class Config:
-        env_file = ".env"
-        case_sensitive = True
-        extra = "allow"  # Adicionado para permitir campos extras
+    BATCH_SIZE: int = int(os.getenv("BATCH_SIZE", "32"))
 
 
 settings = Settings()

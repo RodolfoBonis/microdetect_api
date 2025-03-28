@@ -187,4 +187,47 @@ python -m alembic upgrade head
 - Gerar uma migração (mesmo que não haja mudanças):
   ```bash
   python -m alembic revision -m "Descrição da migração"
-  ``` 
+  ```
+
+## Como substituir o Pydantic
+
+Este projeto foi adaptado para usar classes Python regulares em vez do Pydantic. Principais alterações:
+
+1. Criada uma classe base `BaseSchema` em `microdetect/schemas/base.py` que fornece funcionalidades de:
+   - Inicialização via `__init__`
+   - Serialização para dicionário via método `dict()`
+   - Conversão de objetos ORM para schemas via método `from_orm()`
+
+2. Classes de esquema implementadas como classes regulares do Python que herdam de `BaseSchema`
+
+3. Utilitários de serialização em `microdetect/utils/serializers.py` para:
+   - Converter objetos Python para JSON
+   - Construir respostas da API padronizadas
+
+4. Os endpoints da API foram atualizados para usar os serializadores personalizados
+
+### Vantagens desta abordagem:
+- Sem dependências externas para validação/serialização
+- Maior controle sobre o comportamento de serialização
+- Classes mais simples e explícitas
+- Maior flexibilidade na manipulação dos dados
+
+### Exemplo de uso:
+```python
+# Criar um objeto a partir de dados
+model = SimpleModelResponse(
+    id=1,
+    name="Modelo de teste",
+    description="Um modelo para teste"
+)
+
+# Converter para dicionário
+model_dict = model.dict()
+
+# Criar a partir de um objeto ORM
+from_db = SimpleModelResponse.from_orm(db_model)
+
+# Construir resposta da API
+from microdetect.utils.serializers import build_response
+response = build_response(model)
+``` 
