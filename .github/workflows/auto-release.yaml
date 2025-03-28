@@ -247,7 +247,7 @@ jobs:
     outputs:
       release_status: ${{ steps.status.outputs.status }}
       release_url: ${{ steps.create_release.outputs.html_url || '' }}
-      version: ${{ needs.determine_version.outputs.new_version }}
+      version: ${{ needs.determine_version.outputs.new_version || steps.update_version.outputs.final_version }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -277,6 +277,35 @@ jobs:
           
           # Make sure the directory exists
           mkdir -p microdetect
+          
+          # Check if __init__.py exists and extract current version from code
+          if [ -f "microdetect/__init__.py" ]; then
+            CURRENT_CODE_VERSION=$(grep -o -E "__version__ = '[0-9]+\.[0-9]+\.[0-9]+'" microdetect/__init__.py | grep -o -E "[0-9]+\.[0-9]+\.[0-9]+")
+            
+            if [ ! -z "$CURRENT_CODE_VERSION" ]; then
+              echo "Current version in code: $CURRENT_CODE_VERSION"
+              
+              # Compare versions (using sort -V for version sorting)
+              if [[ "$(echo -e "$CURRENT_CODE_VERSION\n$VERSION_NUM" | sort -V | head -n1)" == "$VERSION_NUM" ]]; then
+                echo "Warning: New version ($VERSION_NUM) would be lower than current code version ($CURRENT_CODE_VERSION). Using code version as base."
+                
+                # Parse current code version
+                IFS='.' read -r code_major code_minor code_patch <<< "$CURRENT_CODE_VERSION"
+                
+                # Increment the patch version
+                VERSION_NUM="${code_major}.${code_minor}.$((code_patch + 1))"
+                echo "Incremented version will be: $VERSION_NUM"
+                
+                # Set the final version with v prefix for later use
+                FINAL_VERSION="v$VERSION_NUM"
+                echo "final_version=$FINAL_VERSION" >> $GITHUB_OUTPUT
+              else
+                # Keep the originally calculated version
+                FINAL_VERSION="$VERSION"
+                echo "final_version=$FINAL_VERSION" >> $GITHUB_OUTPUT
+              fi
+            fi
+          fi
           
           # Update version in setup.py
           if [ -f "setup.py" ]; then
@@ -333,8 +362,12 @@ jobs:
           # Make sure we're explicitly on main branch
           git checkout main
 
+          # Get the final version (either the original or the incremented one)
+          FINAL_VERSION="${{ steps.update_version.outputs.final_version || needs.determine_version.outputs.new_version }}"
+          echo "Using final version: $FINAL_VERSION for commit"
+
           git add microdetect/__init__.py
-          git commit -m "chore: bump version to ${{ needs.determine_version.outputs.new_version }}" || echo "No changes to commit"
+          git commit -m "chore: bump version to $FINAL_VERSION" || echo "No changes to commit"
           git push origin main || echo "Failed to push changes"
 
       - name: Create Release with GitHub CLI
@@ -342,14 +375,18 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN || github.token }}
         run: |
+          # Get the final version (either the original or the incremented one)
+          FINAL_VERSION="${{ steps.update_version.outputs.final_version || needs.determine_version.outputs.new_version }}"
+          echo "Using final version: $FINAL_VERSION for release"
+          
           # Create tag
-          git tag ${{ needs.determine_version.outputs.new_version }}
+          git tag $FINAL_VERSION
           git push --tags
 
           # Create the release with GitHub CLI
           RELEASE_URL=$(gh release create \
-            ${{ needs.determine_version.outputs.new_version }} \
-            --title "Release ${{ needs.determine_version.outputs.new_version }}" \
+            $FINAL_VERSION \
+            --title "Release $FINAL_VERSION" \
             --notes "${{ needs.determine_version.outputs.changelog }}")
 
           echo "::set-output name=html_url::$RELEASE_URL"
