@@ -1,0 +1,247 @@
+name: Deploy to AWS CodeArtifact
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version_increment:
+        description: 'Version increment type'
+        required: true
+        default: 'patch'
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+      custom_version:
+        description: 'Custom version (leave empty to use auto-increment)'
+        required: false
+        type: string
+
+jobs:
+  get_release_info:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GH_TOKEN }}
+    outputs:
+      release_info: ${{ steps.format_info.outputs.info }}
+      version: ${{ steps.get_version.outputs.version }}
+    steps:
+      - name: Install GitHub CLI
+        run: sudo apt-get install gh jq -y
+
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_TOKEN }}
+          fetch-depth: 0
+
+      - name: Get release information
+        id: get_release
+        run: |
+          if [ "${{ github.event_name }}" == "release" ]; then
+            # If triggered by a release event
+            echo "📦 Release: ${{ github.event.release.tag_name }}" > release_info.txt
+            echo "" >> release_info.txt
+            echo "📝 Release Notes:" >> release_info.txt
+            echo "${{ github.event.release.body }}" >> release_info.txt
+            
+            # Get commits since previous release
+            previous_tag=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+            if [ ! -z "$previous_tag" ]; then
+              echo "" >> release_info.txt
+              echo "🔄 Changes since $previous_tag:" >> release_info.txt
+              git log "$previous_tag..HEAD" --pretty=format:"• %s" >> release_info.txt
+            fi
+            
+            # Set version from release tag
+            echo "version=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
+          else
+            # If manually triggered
+            latest_tag=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+            echo "latest_tag=$latest_tag" >> $GITHUB_ENV
+            
+            # Parse the latest tag to get version components
+            if [[ $latest_tag == v* ]]; then
+              version=${latest_tag#v}
+            else
+              version=$latest_tag
+            fi
+            
+            IFS='.' read -r major minor patch <<< "$version"
+            
+            # Calculate new version based on input
+            if [ ! -z "${{ github.event.inputs.custom_version }}" ]; then
+              new_version="${{ github.event.inputs.custom_version }}"
+            else
+              case "${{ github.event.inputs.version_increment }}" in
+                major)
+                  new_version="$((major + 1)).0.0"
+                  ;;
+                minor)
+                  new_version="${major}.$((minor + 1)).0"
+                  ;;
+                patch|*)
+                  new_version="${major}.${minor}.$((patch + 1))"
+                  ;;
+              esac
+            fi
+            
+            echo "📦 Manual Deploy - v${new_version}" > release_info.txt
+            echo "" >> release_info.txt
+            echo "🔄 Changes since $latest_tag:" >> release_info.txt
+            git log "$latest_tag..HEAD" --pretty=format:"• %s" >> release_info.txt
+            
+            # Set new version
+            echo "version=v${new_version}" >> $GITHUB_OUTPUT
+          fi
+          
+          cat release_info.txt
+
+      - name: Format information for output
+        id: format_info
+        run: |
+          formatted_info=$(cat release_info.txt | jq -sR .)
+          echo "info=$formatted_info" >> $GITHUB_OUTPUT
+
+      - name: Get version for package
+        id: get_version
+        run: |
+          # For microdetect.__version__ format
+          python_version=$(echo "${{ steps.get_release.outputs.version }}" | sed 's/^v//')
+          echo "version=$python_version" >> $GITHUB_OUTPUT
+
+      - name: Upload release info
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-info
+          path: release_info.txt
+
+  build_and_deploy:
+    name: Build and Deploy to AWS CodeArtifact
+    needs: get_release_info
+    runs-on: ubuntu-latest
+    outputs:
+      error_message: ${{ steps.set_version.outputs.error_message || steps.install_deps.outputs.error_message || steps.build.outputs.error_message || steps.aws_credentials.outputs.error_message || steps.login_codeartifact.outputs.error_message || steps.deploy.outputs.error_message }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Set package version
+        id: set_version
+        run: |
+          # Update version in __init__.py
+          sed -i "s/__version__ = .*/__version__ = '${{ needs.get_release_info.outputs.version }}'/" microdetect/__init__.py
+          cat microdetect/__init__.py | grep "__version__"
+
+      - name: Install build dependencies
+        id: install_deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install build wheel twine
+
+      - name: Build package
+        id: build
+        run: |
+          python -m build
+
+      - name: Configure AWS credentials
+        id: aws_credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Login to AWS CodeArtifact
+        id: login_codeartifact
+        run: |
+          token=$(aws codeartifact get-authorization-token \
+            --domain ${{ secrets.AWS_CODEARTIFACT_DOMAIN }} \
+            --domain-owner ${{ secrets.AWS_CODEARTIFACT_OWNER || secrets.AWS_ACCOUNT_ID || '$(aws sts get-caller-identity --query "Account" --output text)' }} \
+            --query authorizationToken \
+            --output text)
+
+          echo "::add-mask::$token"
+          echo "codeartifact_token=$token" >> $GITHUB_OUTPUT
+
+          repository_endpoint=$(aws codeartifact get-repository-endpoint \
+            --domain ${{ secrets.AWS_CODEARTIFACT_DOMAIN }} \
+            --domain-owner ${{ secrets.AWS_CODEARTIFACT_OWNER || secrets.AWS_ACCOUNT_ID || '$(aws sts get-caller-identity --query "Account" --output text)' }} \
+            --repository ${{ secrets.AWS_CODEARTIFACT_REPOSITORY }} \
+            --format pypi \
+            --query repositoryEndpoint \
+            --output text)
+
+          echo "repository_url=$repository_endpoint" >> $GITHUB_OUTPUT
+
+      - name: Deploy to AWS CodeArtifact
+        id: deploy
+        env:
+          TWINE_USERNAME: aws
+          TWINE_PASSWORD: ${{ steps.login_codeartifact.outputs.codeartifact_token }}
+          TWINE_REPOSITORY_URL: ${{ steps.login_codeartifact.outputs.repository_url }}
+        run: |
+          twine upload dist/*
+
+  notify:
+    name: Send Notification
+    needs: [get_release_info, build_and_deploy]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Set job status
+        id: status
+        run: |
+          if [[ "${{ needs.build_and_deploy.result }}" == "success" ]]; then
+            echo "status=success" >> $GITHUB_OUTPUT
+          else
+            echo "status=failure" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Send Success Message via Telegram
+        if: steps.status.outputs.status == 'success'
+        uses: akeylimepie/telegram-action@main
+        with:
+          token: ${{ secrets.BOTTOKEN }}
+          chat_id: ${{ secrets.CHAT_ID }}
+          message_thread_id: ${{ secrets.THREAD_ID }}
+          parse_mode: 'markdown'
+          text: |
+            ✅ *Successfully Deployed to AWS CodeArtifact!*
+
+            *Details:*
+            • Package: MicroDetect
+            • Version: ${{ needs.get_release_info.outputs.version }}
+            • Repository: ${{ secrets.AWS_CODEARTIFACT_REPOSITORY }}
+            • Domain: ${{ secrets.AWS_CODEARTIFACT_DOMAIN }}
+
+                  📦 [View GitHub Action](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
+                  🔗 [View Release](https://github.com/${{ github.repository }}/releases/tag/v${{ needs.get_release_info.outputs.version }})
+                  📝 [View Changelog](https://github.com/${{ github.repository }}/compare/v$(echo "${{ needs.get_release_info.outputs.version }}" | awk -F. '{print $1"."$2"."$3-1}')...v${{ needs.get_release_info.outputs.version }})
+
+      - name: Send Error Message via Telegram
+        if: steps.status.outputs.status == 'failure'
+        uses: akeylimepie/telegram-action@main
+        with:
+          token: ${{ secrets.BOTTOKEN }}
+          chat_id: ${{ secrets.CHAT_ID }}
+          message_thread_id: ${{ secrets.THREAD_ID }}
+          parse_mode: 'markdown'
+          text: |
+            ❌ *Failed to Deploy to AWS CodeArtifact!*
+            
+            *Error Details:*
+            • Package: MicroDetect
+            • Version: ${{ needs.get_release_info.outputs.version }}
+            • Repository: ${{ secrets.AWS_CODEARTIFACT_REPOSITORY }}
+            • Domain: ${{ secrets.AWS_CODEARTIFACT_DOMAIN }}
+            
+            ${{ needs.build_and_deploy.outputs.error_message }}
+            
+            ⚠️ [View Error Logs](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})

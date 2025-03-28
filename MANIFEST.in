@@ -1,0 +1,4 @@
+# Em MANIFEST.in
+include microdetect/database/migrations/alembic.ini
+include microdetect/database/migrations/script.py.mako
+recursive-include microdetect/database/migrations/versions *.py
