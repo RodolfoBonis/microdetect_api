@@ -155,13 +155,18 @@ def get_dataset_statistics(
     # Distribuição de classes (para class_counts)
     class_counts = {}
     
+    # Adicionar classes definidas no dataset, mesmo sem anotações
+    if dataset.classes:
+        for class_name in dataset.classes:
+            class_counts[class_name] = 0  # Inicializa com zero anotações
+    
     if total_annotations > 0:
         # Buscar todas as classes usadas nas anotações do dataset
         class_counts_result = db.execute(
             text("""
             SELECT a.class_name, COUNT(*) as count
-            FROM annotation a
-            JOIN image i ON a.image_id = i.id
+            FROM annotations a
+            JOIN images i ON a.image_id = i.id
             WHERE i.dataset_id = :dataset_id
             GROUP BY a.class_name
             ORDER BY count DESC
@@ -169,7 +174,7 @@ def get_dataset_statistics(
             {"dataset_id": dataset_id}
         ).fetchall()
         
-        # Calcular distribuição
+        # Atualizar contagens (só atualiza se já existirem anotações)
         for row in class_counts_result:
             class_name = row[0]
             count = row[1]
@@ -181,25 +186,66 @@ def get_dataset_statistics(
         average_objects_per_image = total_annotations / total_images
     
     # Tamanho médio das imagens (se disponível)
-    average_image_size = None
+    average_image_size = {"width": 0, "height": 0}  # Valor padrão
+    
     try:
-        size_query_result = db.execute(
+        # Primeiro, vamos verificar se as colunas width e height existem na tabela image
+        import logging
+        
+        # Listar todas as imagens do dataset para diagnóstico
+        images_data = db.execute(
             text("""
-            SELECT AVG(i.width) as avg_width, AVG(i.height) as avg_height
-            FROM image i
-            WHERE i.dataset_id = :dataset_id AND i.width IS NOT NULL AND i.height IS NOT NULL
+            SELECT id, file_name, width, height FROM images 
+            WHERE dataset_id = :dataset_id
+            LIMIT 10
             """),
             {"dataset_id": dataset_id}
-        ).fetchone()
+        ).fetchall()
         
-        if size_query_result and size_query_result[0] and size_query_result[1]:
-            average_image_size = {
-                "width": round(size_query_result[0]),
-                "height": round(size_query_result[1])
-            }
-    except Exception:
-        # Se houver erro ou se width/height não existirem na tabela, ignorar
-        pass
+        logging.info(f"Dados de imagens para dataset {dataset_id}: {images_data}")
+        
+        # Se temos pelo menos uma imagem
+        if images_data:
+            # Abordagem 1: Tentar calcular média usando SQL
+            size_query_result = db.execute(
+                text("""
+                SELECT AVG(CAST(width AS FLOAT)) as avg_width, AVG(CAST(height AS FLOAT)) as avg_height
+                FROM images
+                WHERE dataset_id = :dataset_id 
+                AND width IS NOT NULL AND width > 0
+                AND height IS NOT NULL AND height > 0
+                """),
+                {"dataset_id": dataset_id}
+            ).fetchone()
+            
+            logging.info(f"Resultado da query de tamanho médio: {size_query_result}")
+            
+            if size_query_result and size_query_result[0] and size_query_result[1]:
+                average_image_size = {
+                    "width": round(size_query_result[0]),
+                    "height": round(size_query_result[1])
+                }
+                logging.info(f"Tamanho médio calculado pelo SQL: {average_image_size}")
+            else:
+                # Abordagem 2: Calcular manualmente a partir dos dados individuais
+                valid_images = [img for img in images_data if img[2] and img[3] and img[2] > 0 and img[3] > 0]
+                
+                if valid_images:
+                    total_width = sum(img[2] for img in valid_images)
+                    total_height = sum(img[3] for img in valid_images)
+                    count = len(valid_images)
+                    
+                    average_image_size = {
+                        "width": round(total_width / count),
+                        "height": round(total_height / count)
+                    }
+                    logging.info(f"Tamanho médio calculado manualmente: {average_image_size}")
+                else:
+                    logging.warning(f"Nenhuma imagem com dimensões válidas encontrada para o dataset {dataset_id}")
+    except Exception as e:
+        import logging
+        logging.error(f"Erro ao calcular tamanho médio de imagens: {str(e)}")
+        # Manter valor padrão
     
     # Distribuição de tamanhos de objetos
     object_size_distribution = None
@@ -210,8 +256,8 @@ def get_dataset_statistics(
         bbox_data = db.execute(
             text("""
             SELECT a.bbox, i.width, i.height
-            FROM annotation a
-            JOIN image i ON a.image_id = i.id
+            FROM annotations a
+            JOIN images i ON a.image_id = i.id
             WHERE i.dataset_id = :dataset_id AND a.bbox IS NOT NULL
             """),
             {"dataset_id": dataset_id}
@@ -292,10 +338,12 @@ def get_dataset_statistics(
                 }
                 
                 # Calcular densidade média de objetos
-                average_object_density = None
+                average_object_density = 0  # Valor padrão inicializado
                 if total_img_area > 0:
                     average_object_density = total_obj_area / total_img_area
     except Exception:
+        # Inicializar average_object_density caso não tenha sido definido no bloco try
+        average_object_density = 0
         # Ignorar erros ao processar bboxes
         pass
     
