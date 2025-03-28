@@ -4,15 +4,15 @@ import os
 from typing import Dict, Any
 import psutil
 import GPUtil
+from microdetect import __version__
 
 router = APIRouter()
 
-def get_version_from_file() -> str:
+def get_version_from_package() -> str:
     try:
-        with open("version.txt", "r") as file:
-            return file.read().strip()
+        return __version__
     except Exception as e:
-        print(f"Erro ao ler o arquivo de versão: {str(e)}")
+        print(f"Erro ao obter a versão do pacote: {str(e)}")
         return "unknown"
 
 def get_gpu_info() -> Dict[str, Any]:
@@ -72,7 +72,7 @@ async def get_system_status() -> Dict[str, Any]:
 
         # Informações do servidor
         server_info = {
-            "version": get_version_from_file(),
+            "version": get_version_from_package(),
             "active": True,
         }
 
