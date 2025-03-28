@@ -44,6 +44,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
         with:
+          repository: RodolfoBonis/microdetect_api
           token: ${{ secrets.GH_TOKEN }}
           fetch-depth: 0
 
