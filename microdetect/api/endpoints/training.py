@@ -6,18 +6,23 @@ from microdetect.database.database import get_db
 from microdetect.models.training_session import TrainingSession, TrainingStatus
 from microdetect.schemas.training_session import TrainingSessionCreate, TrainingSessionResponse, TrainingSessionUpdate
 from microdetect.services.yolo_service import YOLOService
+from microdetect.utils.serializers import build_response, build_error_response
 
 router = APIRouter()
 yolo_service = YOLOService()
 
-@router.post("/", response_model=TrainingSessionResponse)
+@router.post("/", response_model=None)
 async def create_training_session(
-    training: TrainingSessionCreate,
+    training: dict,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db)
 ):
     """Cria uma nova sessão de treinamento."""
-    db_training = TrainingSession(**training.dict())
+    # Criar instância de TrainingSessionCreate a partir do dict recebido
+    training_create = TrainingSessionCreate(**training)
+    
+    # Criar registro no banco
+    db_training = TrainingSession(**training_create.dict())
     db.add(db_training)
     db.commit()
     db.refresh(db_training)
@@ -29,9 +34,11 @@ async def create_training_session(
         db
     )
     
-    return db_training
+    # Converter para esquema de resposta
+    response = TrainingSessionResponse.from_orm(db_training)
+    return build_response(response)
 
-@router.get("/", response_model=List[TrainingSessionResponse])
+@router.get("/", response_model=None)
 def list_training_sessions(
     dataset_id: int = None,
     status: TrainingStatus = None,
@@ -46,35 +53,47 @@ def list_training_sessions(
     if status:
         query = query.filter(TrainingSession.status == status)
     sessions = query.offset(skip).limit(limit).all()
-    return sessions
+    
+    # Converter para esquema de resposta
+    response_list = [TrainingSessionResponse.from_orm(session) for session in sessions]
+    return build_response(response_list)
 
-@router.get("/{session_id}", response_model=TrainingSessionResponse)
+@router.get("/{session_id}", response_model=None)
 def get_training_session(session_id: int, db: Session = Depends(get_db)):
     """Obtém uma sessão de treinamento específica."""
     session = db.query(TrainingSession).filter(TrainingSession.id == session_id).first()
     if session is None:
-        raise HTTPException(status_code=404, detail="Sessão de treinamento não encontrada")
-    return session
+        return build_error_response("Sessão de treinamento não encontrada", 404)
+    
+    # Converter para esquema de resposta
+    response = TrainingSessionResponse.from_orm(session)
+    return build_response(response)
 
-@router.put("/{session_id}", response_model=TrainingSessionResponse)
+@router.put("/{session_id}", response_model=None)
 def update_training_session(
     session_id: int,
-    session_update: TrainingSessionUpdate,
+    session_update_dict: dict,
     db: Session = Depends(get_db)
 ):
     """Atualiza uma sessão de treinamento existente."""
     db_session = db.query(TrainingSession).filter(TrainingSession.id == session_id).first()
     if db_session is None:
-        raise HTTPException(status_code=404, detail="Sessão de treinamento não encontrada")
+        return build_error_response("Sessão de treinamento não encontrada", 404)
+    
+    # Criar instância de TrainingSessionUpdate a partir do dict recebido
+    session_update = TrainingSessionUpdate(**session_update_dict)
     
     for key, value in session_update.dict(exclude_unset=True).items():
         setattr(db_session, key, value)
     
     db.commit()
     db.refresh(db_session)
-    return db_session
+    
+    # Converter para esquema de resposta
+    response = TrainingSessionResponse.from_orm(db_session)
+    return build_response(response)
 
-@router.delete("/{session_id}")
+@router.delete("/{session_id}", response_model=None)
 def delete_training_session(session_id: int, db: Session = Depends(get_db)):
     """Remove uma sessão de treinamento."""
     db_session = db.query(TrainingSession).filter(TrainingSession.id == session_id).first()

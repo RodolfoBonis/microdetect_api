@@ -7,12 +7,13 @@ from microdetect.models.model import Model
 from microdetect.schemas.inference_result import InferenceResultResponse
 from microdetect.services.yolo_service import YOLOService
 from microdetect.services.image_service import ImageService
+from microdetect.utils.serializers import build_response, build_error_response
 
 router = APIRouter()
 yolo_service = YOLOService()
 image_service = ImageService()
 
-@router.post("/", response_model=InferenceResultResponse)
+@router.post("/", response_model=None)
 async def perform_inference(
     file: UploadFile = File(...),
     model_id: int = None,
@@ -23,11 +24,11 @@ async def perform_inference(
     # Validar modelo
     model = db.query(Model).filter(Model.id == model_id).first()
     if not model:
-        raise HTTPException(status_code=404, detail="Modelo não encontrado")
+        return build_error_response("Modelo não encontrado", 404)
     
     # Validar tipo de arquivo
     if file.content_type not in ["image/jpeg", "image/png", "image/tiff"]:
-        raise HTTPException(status_code=400, detail="Tipo de arquivo não suportado")
+        return build_error_response("Tipo de arquivo não suportado", 400)
     
     # Ler conteúdo do arquivo
     content = await file.read()
@@ -58,13 +59,15 @@ async def perform_inference(
         db.commit()
         db.refresh(result)
         
-        return result
+        # Converter para esquema de resposta
+        response = InferenceResultResponse.from_orm(result)
+        return build_response(response)
         
     finally:
         # Limpar arquivo temporário
         image_service.delete_image(image_info["filename"])
 
-@router.get("/", response_model=List[InferenceResultResponse])
+@router.get("/", response_model=None)
 def list_inference_results(
     image_id: int = None,
     model_id: int = None,
@@ -79,12 +82,18 @@ def list_inference_results(
     if model_id:
         query = query.filter(InferenceResult.model_id == model_id)
     results = query.offset(skip).limit(limit).all()
-    return results
+    
+    # Converter para esquema de resposta
+    response_list = [InferenceResultResponse.from_orm(result) for result in results]
+    return build_response(response_list)
 
-@router.get("/{result_id}", response_model=InferenceResultResponse)
+@router.get("/{result_id}", response_model=None)
 def get_inference_result(result_id: int, db: Session = Depends(get_db)):
     """Obtém um resultado de inferência específico."""
     result = db.query(InferenceResult).filter(InferenceResult.id == result_id).first()
     if result is None:
-        raise HTTPException(status_code=404, detail="Resultado de inferência não encontrado")
-    return result 
+        return build_error_response("Resultado de inferência não encontrado", 404)
+    
+    # Converter para esquema de resposta
+    response = InferenceResultResponse.from_orm(result)
+    return build_response(response) 

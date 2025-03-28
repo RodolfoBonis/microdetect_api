@@ -8,12 +8,13 @@ from microdetect.models.dataset import Dataset
 from microdetect.models.dataset_image import DatasetImage
 from microdetect.schemas.image import ImageResponse, ImageUpdate
 from microdetect.services.image_service import ImageService
+from microdetect.utils.serializers import build_response, build_error_response
 from sqlalchemy import or_
 
 router = APIRouter()
 image_service = ImageService()
 
-@router.post("/", response_model=ImageResponse)
+@router.post("/", response_model=None)
 async def upload_image(
     file: UploadFile = File(...),
     dataset_id: Optional[int] = Form(None),
@@ -96,9 +97,11 @@ async def upload_image(
             print(f"Erro ao associar imagem ao dataset: {e}")
             # Não falhar o upload caso a associação dê erro
     
-    return db_image
+    # Converter o modelo ORM para a classe de resposta
+    response = ImageResponse.from_orm(db_image)
+    return build_response(response)
 
-@router.get("/", response_model=List[ImageResponse])
+@router.get("/", response_model=None)
 def list_images(
     dataset_id: Optional[int] = None,
     skip: int = 0,
@@ -140,9 +143,11 @@ def list_images(
         # Atribuir à propriedade datasets da imagem
         image.datasets = datasets
     
-    return images
+    # Converter modelos ORM para classes de resposta
+    response_list = [ImageResponse.from_orm(image) for image in images]
+    return build_response(response_list)
 
-@router.get("/{image_id}", response_model=ImageResponse)
+@router.get("/{image_id}", response_model=None)
 def get_image(image_id: int, db: Session = Depends(get_db)):
     """Obtém uma imagem específica com seus datasets associados."""
     # Buscar a imagem pelo ID
@@ -161,20 +166,21 @@ def get_image(image_id: int, db: Session = Depends(get_db)):
     # Se não há datasets associados, retornar a imagem sem datasets
     if not dataset_ids:
         image.datasets = []
-        return image
+    else:
+        # Buscar os datasets correspondentes
+        datasets = db.query(Dataset).filter(Dataset.id.in_(dataset_ids)).all()
         
-    # Buscar os datasets correspondentes
-    datasets = db.query(Dataset).filter(Dataset.id.in_(dataset_ids)).all()
+        # Atribuir à propriedade datasets da imagem
+        image.datasets = datasets
     
-    # Atribuir à propriedade datasets da imagem
-    image.datasets = datasets
-    
-    return image
+    # Converter o modelo ORM para a classe de resposta
+    response = ImageResponse.from_orm(image)
+    return build_response(response)
 
-@router.put("/{image_id}", response_model=ImageResponse)
+@router.put("/{image_id}", response_model=None)
 def update_image(
     image_id: int,
-    image_update: ImageUpdate,
+    image_update_dict: dict,
     db: Session = Depends(get_db)
 ):
     """Atualiza uma imagem existente."""
@@ -182,12 +188,18 @@ def update_image(
     if db_image is None:
         raise HTTPException(status_code=404, detail="Imagem não encontrada")
     
+    # Criar instância de ImageUpdate a partir do dict recebido
+    image_update = ImageUpdate(**image_update_dict)
+    
     for key, value in image_update.dict(exclude_unset=True).items():
         setattr(db_image, key, value)
     
     db.commit()
     db.refresh(db_image)
-    return db_image
+    
+    # Converter o modelo ORM para a classe de resposta
+    response = ImageResponse.from_orm(db_image)
+    return build_response(response)
 
 @router.delete("/{image_id}")
 def delete_image(image_id: int, db: Session = Depends(get_db)):
@@ -198,10 +210,13 @@ def delete_image(image_id: int, db: Session = Depends(get_db)):
     
     # Remover arquivo físico
     if not image_service.delete_image(db_image.file_name, db_image.dataset_id):
-        raise HTTPException(status_code=500, detail="Erro ao remover arquivo")
+        raise HTTPException(status_code=500, detail="Erro ao remover arquivo físico")
+    
+    # Remover associações com datasets
+    db.query(DatasetImage).filter(DatasetImage.image_id == image_id).delete()
     
     # Remover registro do banco
     db.delete(db_image)
     db.commit()
     
-    return {"message": "Imagem removida com sucesso"}
+    return build_response({"message": "Imagem removida com sucesso"})

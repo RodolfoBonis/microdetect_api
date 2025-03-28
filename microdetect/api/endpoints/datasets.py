@@ -14,24 +14,32 @@ from microdetect.schemas.dataset_statistics import DatasetStatistics
 from microdetect.services.image_service import ImageService
 from microdetect.services.dataset_service import DatasetService
 from microdetect.schemas.class_distribution import ClassDistributionResponse, ClassInfo
+from microdetect.utils.serializers import build_response, build_error_response
 import json
 
 router = APIRouter()
 image_service = ImageService()
 
-@router.post("/", response_model=DatasetResponse)
+@router.post("/", response_model=None)
 def create_dataset(
     *,
     db: Session = Depends(get_db),
-    dataset_in: DatasetCreate,
+    dataset_in: dict,
 ) -> Any:
     """
     Criar um novo dataset.
     """
-    dataset = DatasetService(db).create(dataset_in)
-    return dataset
+    # Criar instância de DatasetCreate a partir do dict recebido
+    dataset_create = DatasetCreate(**dataset_in)
+    
+    # Criar dataset
+    dataset = DatasetService(db).create(dataset_create)
+    
+    # Converter para esquema de resposta
+    response = DatasetResponse.from_orm(dataset)
+    return build_response(response)
 
-@router.get("/", response_model=List[DatasetResponse])
+@router.get("/", response_model=None)
 def list_datasets(
     db: Session = Depends(get_db),
     skip: int = 0,
@@ -46,9 +54,11 @@ def list_datasets(
     for dataset in datasets:
         dataset.images_count = db.query(func.count(Image.id)).filter(Image.dataset_id == dataset.id).scalar() or 0
     
-    return datasets
+    # Converter para esquema de resposta
+    response_list = [DatasetResponse.from_orm(ds) for ds in datasets]
+    return build_response(response_list)
 
-@router.get("/{dataset_id}", response_model=DatasetResponse)
+@router.get("/{dataset_id}", response_model=None)
 def get_dataset(
     *,
     db: Session = Depends(get_db),
@@ -59,35 +69,43 @@ def get_dataset(
     """
     dataset = DatasetService(db).get(dataset_id)
     if not dataset:
-        raise HTTPException(status_code=404, detail="Dataset não encontrado")
+        return build_error_response("Dataset não encontrado", 404)
     
     # Carregar a contagem de imagens
     dataset.images_count = db.query(func.count(Image.id)).filter(Image.dataset_id == dataset.id).scalar() or 0
     
-    return dataset
+    # Converter para esquema de resposta
+    response = DatasetResponse.from_orm(dataset)
+    return build_response(response)
 
-@router.put("/{dataset_id}", response_model=DatasetResponse)
+@router.put("/{dataset_id}", response_model=None)
 def update_dataset(
     *,
     db: Session = Depends(get_db),
     dataset_id: int,
-    dataset_in: DatasetUpdate,
+    dataset_in: dict,
 ) -> Any:
     """
     Atualizar um dataset.
     """
     dataset = DatasetService(db).get(dataset_id)
     if not dataset:
-        raise HTTPException(status_code=404, detail="Dataset não encontrado")
+        return build_error_response("Dataset não encontrado", 404)
     
-    dataset = DatasetService(db).update(dataset, dataset_in)
+    # Criar instância de DatasetUpdate a partir do dict recebido
+    dataset_update = DatasetUpdate(**dataset_in)
+    
+    # Atualizar dataset
+    dataset = DatasetService(db).update(dataset, dataset_update)
     
     # Carregar a contagem de imagens
     dataset.images_count = db.query(func.count(Image.id)).filter(Image.dataset_id == dataset.id).scalar() or 0
     
-    return dataset
+    # Converter para esquema de resposta
+    response = DatasetResponse.from_orm(dataset)
+    return build_response(response)
 
-@router.delete("/{dataset_id}")
+@router.delete("/{dataset_id}", response_model=None)
 def delete_dataset(
     *,
     db: Session = Depends(get_db),
@@ -98,13 +116,13 @@ def delete_dataset(
     """
     dataset = DatasetService(db).get(dataset_id)
     if not dataset:
-        raise HTTPException(status_code=404, detail="Dataset não encontrado")
+        return build_error_response("Dataset não encontrado", 404)
     
     DatasetService(db).remove(dataset_id)
     
-    return {"success": True}
+    return build_response({"success": True})
 
-@router.get("/{dataset_id}/stats", response_model=DatasetStatistics)
+@router.get("/{dataset_id}/stats", response_model=None)
 def get_dataset_statistics(
     *,
     db: Session = Depends(get_db),
@@ -115,7 +133,7 @@ def get_dataset_statistics(
     """
     dataset = DatasetService(db).get(dataset_id)
     if not dataset:
-        raise HTTPException(status_code=404, detail="Dataset não encontrado")
+        return build_error_response("Dataset não encontrado", 404)
     
     # Contagem de imagens
     total_images = db.query(func.count(Image.id)).filter(Image.dataset_id == dataset_id).scalar() or 0
@@ -293,23 +311,24 @@ def get_dataset_statistics(
     # Timestamp atual para last_calculated
     last_calculated = datetime.utcnow()
     
-    # Construir e retornar as estatísticas
-    return {
-        "total_images": total_images,
-        "total_annotations": total_annotations,
-        "annotated_images": annotated_images,
-        "unannotated_images": unannotated_images,
-        "average_image_size": average_image_size,
-        "object_size_distribution": object_size_distribution,
-        "class_imbalance": class_imbalance,
-        "average_objects_per_image": average_objects_per_image,
-        "average_object_density": average_object_density if 'average_object_density' in locals() else None,
-        "last_calculated": last_calculated,
-        "class_counts": class_counts,
-        "extra_data": None
-    }
+    # Criar instância de DatasetStatistics com as estatísticas calculadas
+    stats = DatasetStatistics(
+        total_images=total_images,
+        total_annotations=total_annotations,
+        annotated_images=annotated_images,
+        unannotated_images=unannotated_images,
+        average_image_size=average_image_size,
+        object_size_distribution=object_size_distribution,
+        class_imbalance=class_imbalance,
+        average_objects_per_image=average_objects_per_image,
+        average_object_density=average_object_density,
+        last_calculated=last_calculated,
+        class_counts=class_counts,
+    )
+    
+    return build_response(stats)
 
-@router.post("/{dataset_id}/classes")
+@router.post("/{dataset_id}/classes", response_model=None)
 def add_class(
         *,
         db: Session = Depends(get_db),
@@ -321,15 +340,16 @@ def add_class(
     """
     dataset = DatasetService(db).get(dataset_id)
     if not dataset:
-        raise HTTPException(status_code=404, detail="Dataset não encontrado")
-
+        return build_error_response("Dataset não encontrado", 404)
+    
+    # Extrair nome da classe do corpo da requisição
     class_name = class_data.get("class_name")
     if not class_name:
-        raise HTTPException(status_code=400, detail="Nome da classe é obrigatório")
-
+        return build_error_response("Nome da classe não fornecido", 400)
+    
     # Verificar se a classe já existe no dataset
     if dataset.classes and class_name in dataset.classes:
-        raise HTTPException(status_code=400, detail=f"Classe '{class_name}' já existe no dataset")
+        return build_error_response(f"Classe '{class_name}' já existe no dataset", 400)
 
     # Adicionar a classe ao dataset
     if not dataset.classes:
@@ -347,9 +367,9 @@ def add_class(
     db.commit()
     db.refresh(dataset)
 
-    return {"success": True, "message": f"Classe '{class_name}' adicionada com sucesso"}
+    return build_response({"success": True, "message": f"Classe '{class_name}' adicionada com sucesso"})
 
-@router.delete("/{dataset_id}/classes/{class_name}")
+@router.delete("/{dataset_id}/classes/{class_name}", response_model=None)
 def remove_class(
     *,
     db: Session = Depends(get_db),
@@ -361,20 +381,20 @@ def remove_class(
     """
     dataset = DatasetService(db).get(dataset_id)
     if not dataset:
-        raise HTTPException(status_code=404, detail="Dataset não encontrado")
+        return build_error_response("Dataset não encontrado", 404)
     
     # Verificar se a classe existe no dataset
     if not dataset.classes or class_name not in dataset.classes:
-        raise HTTPException(status_code=404, detail=f"Classe '{class_name}' não encontrada no dataset")
+        return build_error_response(f"Classe '{class_name}' não encontrada no dataset", 404)
     
     # Remover a classe do dataset
     dataset.classes.remove(class_name)
     db.commit()
     db.refresh(dataset)
     
-    return {"success": True, "message": f"Classe '{class_name}' removida com sucesso"}
+    return build_response({"success": True, "message": f"Classe '{class_name}' removida com sucesso"})
 
-@router.get("/{dataset_id}/class-distribution", response_model=List[ClassDistributionResponse])
+@router.get("/{dataset_id}/class-distribution", response_model=None)
 def get_class_distribution(
     *,
     db: Session = Depends(get_db),
@@ -385,7 +405,7 @@ def get_class_distribution(
     """
     dataset = DatasetService(db).get(dataset_id)
     if not dataset:
-        raise HTTPException(status_code=404, detail="Dataset não encontrado")
+        return build_error_response("Dataset não encontrado", 404)
     
     result = []
     
@@ -461,9 +481,9 @@ def get_class_distribution(
     # Ordenar por contagem (decrescente)
     result.sort(key=lambda x: x.count, reverse=True)
     
-    return result
+    return build_response(result)
 
-@router.post("/{dataset_id}/images", response_model=DatasetImageResponse)
+@router.post("/{dataset_id}/images", response_model=None)
 async def associate_image_to_dataset(
     dataset_id: int,
     image_id: int = Body(..., embed=True),
@@ -473,12 +493,12 @@ async def associate_image_to_dataset(
     # Verificar se o dataset existe
     dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
     if not dataset:
-        raise HTTPException(status_code=404, detail="Dataset não encontrado")
+        return build_error_response("Dataset não encontrado", 404)
     
     # Verificar se a imagem existe
     image = db.query(Image).filter(Image.id == image_id).first()
     if not image:
-        raise HTTPException(status_code=404, detail="Imagem não encontrada")
+        return build_error_response("Imagem não encontrada", 404)
     
     # Verificar se a imagem já está associada ao dataset
     existing_association = db.query(DatasetImage).filter(
@@ -499,11 +519,12 @@ async def associate_image_to_dataset(
             db=db
         )
         
-        return result
+        response = DatasetImageResponse.from_orm(result)
+        return build_response(response)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erro ao associar imagem: {str(e)}")
+        return build_error_response(f"Erro ao associar imagem: {str(e)}", 500)
 
-@router.delete("/{dataset_id}/images/{image_id}")
+@router.delete("/{dataset_id}/images/{image_id}", response_model=None)
 async def remove_image_from_dataset(
     dataset_id: int,
     image_id: int,
@@ -513,12 +534,12 @@ async def remove_image_from_dataset(
     # Verificar se o dataset existe
     dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
     if not dataset:
-        raise HTTPException(status_code=404, detail="Dataset não encontrado")
+        return build_error_response("Dataset não encontrado", 404)
     
     # Verificar se a imagem existe
     image = db.query(Image).filter(Image.id == image_id).first()
     if not image:
-        raise HTTPException(status_code=404, detail="Imagem não encontrada")
+        return build_error_response("Imagem não encontrada", 404)
     
     # Verificar se a imagem está associada ao dataset
     association = db.query(DatasetImage).filter(
@@ -527,10 +548,7 @@ async def remove_image_from_dataset(
     ).first()
     
     if not association:
-        raise HTTPException(
-            status_code=404,
-            detail="Imagem não está associada a este dataset"
-        )
+        return build_error_response("Imagem não está associada ao dataset", 404)
     
     # Remover a associação e o arquivo físico se necessário
     try:
@@ -550,10 +568,7 @@ async def remove_image_from_dataset(
             if os.path.exists(association.file_path):
                 os.remove(association.file_path)
         
-        return {"message": "Imagem removida do dataset com sucesso"}
+        return build_response({"success": True, "message": "Imagem removida do dataset com sucesso"})
     except Exception as e:
         db.rollback()
-        raise HTTPException(
-            status_code=500,
-            detail=f"Erro ao remover imagem do dataset: {str(e)}"
-        ) 
+        return build_error_response(f"Erro ao remover imagem do dataset: {str(e)}", 500) 

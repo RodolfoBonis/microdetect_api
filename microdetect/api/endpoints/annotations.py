@@ -10,25 +10,29 @@ from microdetect.schemas.annotation import (
     AnnotationCreate, AnnotationUpdate, 
     AnnotationResponse, AnnotationBatch
 )
+from microdetect.utils.serializers import build_response, build_error_response
 
 router = APIRouter()
 
-@router.post("/", response_model=AnnotationResponse)
+@router.post("/", response_model=None)
 def create_annotation(
-    annotation: AnnotationCreate, 
+    annotation_dict: dict, 
     db: Session = Depends(get_db)
 ):
     """Cria uma nova anotação"""
+    # Criar instância de AnnotationCreate a partir do dict recebido
+    annotation = AnnotationCreate(**annotation_dict)
+    
     # Verificar se a imagem existe
     image = db.query(Image).filter(Image.id == annotation.image_id).first()
     if not image:
-        raise HTTPException(status_code=404, detail="Imagem não encontrada")
+        return build_error_response("Imagem não encontrada", 404)
     
     # Se o dataset_id foi fornecido, verificar se existe
     if annotation.dataset_id:
         dataset = db.query(Dataset).filter(Dataset.id == annotation.dataset_id).first()
         if not dataset:
-            raise HTTPException(status_code=404, detail="Dataset não encontrado")
+            return build_error_response("Dataset não encontrado", 404)
         
         # Verificar se a classe está definida no dataset
         if annotation.class_name and dataset.classes:
@@ -45,9 +49,11 @@ def create_annotation(
     db.commit()
     db.refresh(db_annotation)
     
-    return db_annotation
+    # Converter para esquema de resposta
+    response = AnnotationResponse.from_orm(db_annotation)
+    return build_response(response)
 
-@router.get("/", response_model=List[AnnotationResponse])
+@router.get("/", response_model=None)
 def list_annotations(
     image_id: Optional[int] = None,
     dataset_id: Optional[int] = None,
@@ -69,26 +75,35 @@ def list_annotations(
         query = query.filter(Annotation.class_name == class_name)
     
     annotations = query.offset(skip).limit(limit).all()
-    return annotations
+    
+    # Converter para esquema de resposta
+    response_list = [AnnotationResponse.from_orm(annotation) for annotation in annotations]
+    return build_response(response_list)
 
-@router.get("/{annotation_id}", response_model=AnnotationResponse)
+@router.get("/{annotation_id}", response_model=None)
 def get_annotation(annotation_id: int, db: Session = Depends(get_db)):
     """Obtém uma anotação específica"""
     annotation = db.query(Annotation).filter(Annotation.id == annotation_id).first()
     if annotation is None:
-        raise HTTPException(status_code=404, detail="Anotação não encontrada")
-    return annotation
+        return build_error_response("Anotação não encontrada", 404)
+    
+    # Converter para esquema de resposta
+    response = AnnotationResponse.from_orm(annotation)
+    return build_response(response)
 
-@router.put("/{annotation_id}", response_model=AnnotationResponse)
+@router.put("/{annotation_id}", response_model=None)
 def update_annotation(
     annotation_id: int, 
-    annotation: AnnotationUpdate, 
+    annotation_dict: dict, 
     db: Session = Depends(get_db)
 ):
     """Atualiza uma anotação existente"""
     db_annotation = db.query(Annotation).filter(Annotation.id == annotation_id).first()
     if db_annotation is None:
-        raise HTTPException(status_code=404, detail="Anotação não encontrada")
+        return build_error_response("Anotação não encontrada", 404)
+    
+    # Criar instância de AnnotationUpdate a partir do dict recebido
+    annotation = AnnotationUpdate(**annotation_dict)
     
     # Se estiver atualizando a classe, verificar se ela existe no dataset
     if hasattr(annotation, 'class_name') and annotation.class_name is not None:
@@ -111,39 +126,44 @@ def update_annotation(
     db.commit()
     db.refresh(db_annotation)
     
-    return db_annotation
+    # Converter para esquema de resposta
+    response = AnnotationResponse.from_orm(db_annotation)
+    return build_response(response)
 
-@router.delete("/{annotation_id}")
+@router.delete("/{annotation_id}", response_model=None)
 def delete_annotation(annotation_id: int, db: Session = Depends(get_db)):
     """Remove uma anotação"""
     db_annotation = db.query(Annotation).filter(Annotation.id == annotation_id).first()
     if db_annotation is None:
-        raise HTTPException(status_code=404, detail="Anotação não encontrada")
+        return build_error_response("Anotação não encontrada", 404)
     
     db.delete(db_annotation)
     db.commit()
     
-    return {"message": "Anotação removida com sucesso"}
+    return build_response({"message": "Anotação removida com sucesso"})
 
-@router.post("/batch", response_model=List[AnnotationResponse])
+@router.post("/batch", response_model=None)
 def create_annotations_batch(
-    annotations: AnnotationBatch, 
+    annotations_dict: dict, 
     db: Session = Depends(get_db)
 ):
     """Cria múltiplas anotações em lote"""
+    # Criar instância de AnnotationBatch a partir do dict recebido
+    annotations = AnnotationBatch(**annotations_dict)
+    
     results = []
     
     # Verificar se a imagem existe
     image = db.query(Image).filter(Image.id == annotations.image_id).first()
     if not image:
-        raise HTTPException(status_code=404, detail="Imagem não encontrada")
+        return build_error_response("Imagem não encontrada", 404)
     
     # Se o dataset_id foi fornecido, verificar se existe
     dataset = None
     if annotations.dataset_id:
         dataset = db.query(Dataset).filter(Dataset.id == annotations.dataset_id).first()
         if not dataset:
-            raise HTTPException(status_code=404, detail="Dataset não encontrado")
+            return build_error_response("Dataset não encontrado", 404)
     
     # Processar cada anotação do lote
     for annotation_data in annotations.annotations:
@@ -174,14 +194,16 @@ def create_annotations_batch(
     for annotation in results:
         db.refresh(annotation)
     
-    return results
+    # Converter para esquema de resposta
+    response_list = [AnnotationResponse.from_orm(annotation) for annotation in results]
+    return build_response(response_list)
 
-@router.get("/dataset/{dataset_id}/classes", response_model=List[Dict[str, Any]])
+@router.get("/dataset/{dataset_id}/classes", response_model=None)
 def get_dataset_classes(dataset_id: int, db: Session = Depends(get_db)):
     """Obtém todas as classes definidas em um dataset e suas contagens"""
     dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
     if dataset is None:
-        raise HTTPException(status_code=404, detail="Dataset não encontrado")
+        return build_error_response("Dataset não encontrado", 404)
     
     # Obter a lista de classes definidas no dataset
     defined_classes = dataset.classes or []
@@ -199,52 +221,31 @@ def get_dataset_classes(dataset_id: int, db: Session = Depends(get_db)):
     """)
     class_counts = db.execute(class_query, {"dataset_id": dataset_id}).fetchall()
     
-    # Calcular contagem de anotações
-    annotation_query = text("""
-        SELECT COUNT(a.id) 
-        FROM annotations a
-        JOIN images i ON i.id = a.image_id
-        WHERE i.dataset_id = :dataset_id OR 
-            EXISTS (SELECT 1 FROM dataset_images di WHERE di.dataset_id = :dataset_id AND di.image_id = i.id)
-    """)
-    total_annotations = db.execute(annotation_query, {"dataset_id": dataset_id}).scalar() or 0
-    
-    # Criar dicionário de classes e suas contagens
-    class_distributions = {}
-    for class_name, count in class_counts:
-        percentage = (count / total_annotations) * 100 if total_annotations > 0 else 0
-        class_distributions[class_name] = {
-            "count": count,
-            "percentage": round(percentage, 2)
-        }
-    
-    # Montar a resposta incluindo todas as classes definidas
+    # Formatar o resultado
     result = []
+    total_annotations = sum(count for _, count in class_counts)
+    class_count_dict = {class_name: count for class_name, count in class_counts}
+    
+    # Adicionar classes definidas no dataset
     for class_name in defined_classes:
-        if class_name in class_distributions:
-            result.append({
-                "class_name": class_name,
-                "count": class_distributions[class_name]["count"],
-                "percentage": class_distributions[class_name]["percentage"],
-                "is_used": True
-            })
-        else:
-            result.append({
-                "class_name": class_name,
-                "count": 0,
-                "percentage": 0,
-                "is_used": False
-            })
+        count = class_count_dict.get(class_name, 0)
+        percentage = (count / total_annotations * 100) if total_annotations > 0 else 0
+        result.append({
+            "class_name": class_name,
+            "count": count,
+            "percentage": percentage,
+            "is_defined": True
+        })
     
-    # Adicionar classes que têm anotações mas não estão definidas no dataset
-    for class_name, details in class_distributions.items():
+    # Adicionar classes usadas em anotações mas não definidas no dataset
+    for class_name, count in class_counts:
         if class_name not in defined_classes:
+            percentage = (count / total_annotations * 100) if total_annotations > 0 else 0
             result.append({
                 "class_name": class_name,
-                "count": details["count"],
-                "percentage": details["percentage"],
-                "is_used": True,
-                "is_undefined": True
+                "count": count,
+                "percentage": percentage,
+                "is_defined": False
             })
     
-    return result 
+    return build_response(result) 
