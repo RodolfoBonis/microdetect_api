@@ -367,6 +367,12 @@ jobs:
           echo "Using final version: $FINAL_VERSION for commit"
 
           git add microdetect/__init__.py
+          
+          if [ -f "setup.py" ]; then
+            echo "Adding setup.py to commit..."
+            git add setup.py
+          fi
+          
           git commit -m "chore: bump version to $FINAL_VERSION" || echo "No changes to commit"
           git push origin main || echo "Failed to push changes"
 
@@ -426,7 +432,7 @@ jobs:
           message_thread_id: ${{ secrets.THREAD_ID }}
           parse_mode: 'markdown'
           text: |
-            ✅ *New Release Created Successfully: ${{ needs.create_release.outputs.version }}*
+            ✅ *New Release Created Successfully: ${{ steps.update_version.outputs.final_version || needs.determine_version.outputs.new_version }}*
 
             Type: ${{ needs.determine_version.outputs.version_type }} release
 
@@ -450,7 +456,7 @@ jobs:
             *Error Details:*
             • Repository: ${{ github.repository }}
             • Branch: ${{ steps.branch_name.outputs.branch }}
-            • Version: ${{ needs.determine_version.outputs.new_version }}
+            • Version: ${{ steps.update_version.outputs.final_version || needs.determine_version.outputs.new_version }}
             • Triggered by: ${{ github.actor }}
 
             ${{ needs.determine_version.outputs.error_message || 'Failed to create GitHub release\\. Check workflow logs for details\\.' }}
