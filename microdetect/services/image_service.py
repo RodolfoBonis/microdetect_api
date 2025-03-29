@@ -36,6 +36,9 @@ class ImageService:
         Returns:
             Dicionário com informações da imagem salva
         """
+        import io
+        from PIL import Image as PILImage
+
         # Determinar diretório de destino
         dest_dir = self.images_dir
         if dataset_id:
@@ -59,6 +62,25 @@ class ImageService:
             counter += 1
             final_filename = f"{base_name}_{counter}{extension}"
             
+        # Se as dimensões não foram fornecidas, extraí-las da imagem
+        img_dimensions = None
+        if width is None or height is None:
+            try:
+                # Abrir a imagem usando PIL para obter dimensões
+                img = PILImage.open(io.BytesIO(image_data))
+                img_dimensions = img.size
+                # Fechar a imagem para liberar recursos
+                img.close()
+            except Exception as e:
+                print(f"Erro ao extrair dimensões da imagem: {e}")
+        
+        # Usar dimensões extraídas se não fornecidas
+        if width is None and img_dimensions:
+            width = img_dimensions[0]
+        
+        if height is None and img_dimensions:
+            height = img_dimensions[1]
+            
         # Salvar arquivo
         filepath = dest_dir / final_filename
         with open(filepath, "wb") as f:
@@ -74,7 +96,7 @@ class ImageService:
             "format": extension.lstrip('.').lower(),
         }
         
-        # Adicionar dimensões aos metadados se fornecidas
+        # Adicionar dimensões aos metadados se disponíveis
         if width is not None:
             image_metadata["width"] = width
         
@@ -103,7 +125,7 @@ class ImageService:
             "image_metadata": image_metadata
         }
         
-        # Adicionar dimensões diretamente ao image_info se fornecidas
+        # Adicionar dimensões diretamente ao image_info se disponíveis
         if width is not None:
             image_info["width"] = width
         

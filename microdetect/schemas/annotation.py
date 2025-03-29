@@ -90,11 +90,25 @@ class AnnotationResponse(AnnotationBase):
     @classmethod
     def from_orm(cls, obj):
         """Converte um objeto ORM para este schema."""
+        # Construir bounding_box a partir de x, y, width, height se bbox não estiver disponível
+        if hasattr(obj, 'bbox') and obj.bbox is not None:
+            bounding_box = obj.bbox
+        elif hasattr(obj, 'x') and hasattr(obj, 'y') and hasattr(obj, 'width') and hasattr(obj, 'height'):
+            bounding_box = {
+                'x': obj.x,
+                'y': obj.y,
+                'width': obj.width,
+                'height': obj.height
+            }
+        else:
+            # Fallback para evitar erro
+            bounding_box = {'x': 0, 'y': 0, 'width': 0, 'height': 0}
+            
         return cls(
             id=obj.id,
             image_id=obj.image_id,
             dataset_id=getattr(obj, 'dataset_id', None),
-            bounding_box=obj.bounding_box,
+            bounding_box=bounding_box,
             class_name=getattr(obj, 'class_name', None),
             confidence=getattr(obj, 'confidence', None),
             metadata=getattr(obj, 'metadata', {}),

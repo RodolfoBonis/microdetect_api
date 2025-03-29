@@ -104,11 +104,12 @@ async def upload_image(
 @router.get("/", response_model=None)
 def list_images(
     dataset_id: Optional[int] = None,
+    with_annotations: bool = False,
     skip: int = 0,
     limit: int = 100,
     db: Session = Depends(get_db)
 ):
-    """Lista todas as imagens com seus datasets associados."""
+    """Lista todas as imagens com seus datasets associados e opcionalmente suas anotações."""
     # Criar query base
     query = db.query(Image)
     
@@ -142,14 +143,25 @@ def list_images(
         
         # Atribuir à propriedade datasets da imagem
         image.datasets = datasets
+        
+        # Buscar e atribuir anotações se solicitado
+        if with_annotations:
+            from microdetect.models.annotation import Annotation
+            image.annotations = db.query(Annotation).filter(Annotation.image_id == image.id).all()
+        else:
+            image.annotations = []
     
     # Converter modelos ORM para classes de resposta
     response_list = [ImageResponse.from_orm(image) for image in images]
     return build_response(response_list)
 
 @router.get("/{image_id}", response_model=None)
-def get_image(image_id: int, db: Session = Depends(get_db)):
-    """Obtém uma imagem específica com seus datasets associados."""
+def get_image(
+    image_id: int, 
+    with_annotations: bool = True,
+    db: Session = Depends(get_db)
+):
+    """Obtém uma imagem específica com seus datasets associados e opcionalmente suas anotações."""
     # Buscar a imagem pelo ID
     image = db.query(Image).filter(Image.id == image_id).first()
     if image is None:
@@ -172,6 +184,13 @@ def get_image(image_id: int, db: Session = Depends(get_db)):
         
         # Atribuir à propriedade datasets da imagem
         image.datasets = datasets
+    
+    # Buscar e atribuir anotações se solicitado
+    if with_annotations:
+        from microdetect.models.annotation import Annotation
+        image.annotations = db.query(Annotation).filter(Annotation.image_id == image.id).all()
+    else:
+        image.annotations = []
     
     # Converter o modelo ORM para a classe de resposta
     response = ImageResponse.from_orm(image)

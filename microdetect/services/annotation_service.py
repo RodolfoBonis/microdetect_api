@@ -1,5 +1,6 @@
 import os
 import json
+import shutil
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from microdetect.core.config import settings
@@ -11,12 +12,16 @@ class AnnotationService:
     def __init__(self):
         self.annotations_dir = settings.ANNOTATIONS_DIR
         self.annotations_dir.mkdir(parents=True, exist_ok=True)
+        self.images_dir = settings.IMAGES_DIR
+        self.images_dir.mkdir(parents=True, exist_ok=True)
+        self.training_dir = settings.TRAINING_DIR
+        self.training_dir.mkdir(parents=True, exist_ok=True)
 
     async def create_annotation(
         self,
         image_id: int,
-        bbox: List[float],
-        class_id: int,
+        bbox: Dict[str, float],
+        class_name: str,
         confidence: Optional[float] = None
     ) -> Annotation:
         """
@@ -24,8 +29,8 @@ class AnnotationService:
         
         Args:
             image_id: ID da imagem
-            bbox: Lista com coordenadas [x1, y1, x2, y2]
-            class_id: ID da classe
+            bbox: Dicionário com coordenadas {x, y, width, height}
+            class_name: Nome da classe
             confidence: Confiança da anotação (opcional)
             
         Returns:
@@ -36,42 +41,50 @@ class AnnotationService:
         if not image:
             raise ValueError(f"Imagem {image_id} não encontrada")
         
-        # Verificar classe
-        dataset = Dataset.query.get(image.dataset_id)
-        if not dataset:
-            raise ValueError(f"Dataset {image.dataset_id} não encontrado")
+        # Verificar dataset
+        dataset_id = image.dataset_id
+        if dataset_id:
+            dataset = Dataset.query.get(dataset_id)
+            if not dataset:
+                raise ValueError(f"Dataset {dataset_id} não encontrado")
+            
+            # Adicionar classe ao dataset se não existir
+            if class_name and dataset.classes and class_name not in dataset.classes:
+                classes = dataset.classes.copy()
+                classes.append(class_name)
+                dataset.classes = classes
         
-        if class_id >= len(dataset.classes):
-            raise ValueError(f"Classe {class_id} não encontrada no dataset")
+        # Preparar dados do bounding box
+        if isinstance(bbox, dict):
+            x = bbox.get('x', 0)
+            y = bbox.get('y', 0)
+            width = bbox.get('width', 0)
+            height = bbox.get('height', 0)
+        elif isinstance(bbox, list) and len(bbox) == 4:
+            # [x1, y1, x2, y2]
+            x, y, x2, y2 = bbox
+            width = x2 - x
+            height = y2 - y
+        else:
+            raise ValueError("Formato de bounding box inválido")
         
-        # Criar diretório da imagem se não existir
-        image_dir = self.annotations_dir / str(image_id)
-        image_dir.mkdir(exist_ok=True)
+        # Criar diretório de anotações para o dataset se não existir
+        if dataset_id:
+            dataset_annotations_dir = self.annotations_dir / str(dataset_id)
+            dataset_annotations_dir.mkdir(exist_ok=True)
         
-        # Gerar nome do arquivo
-        annotation_count = len(image.annotations)
-        filename = f"annotation_{annotation_count + 1}.json"
-        filepath = image_dir / filename
-        
-        # Criar dados da anotação
-        annotation_data = {
-            "bbox": bbox,
-            "class_id": class_id,
-            "class_name": dataset.classes[class_id],
-            "confidence": confidence
-        }
-        
-        # Salvar arquivo
-        with open(filepath, "w") as f:
-            json.dump(annotation_data, f)
-        
-        # Criar registro no banco
+        # Criar anotação
         annotation = Annotation(
-            filename=filename,
-            filepath=str(filepath),
             image_id=image_id,
-            class_id=class_id,
-            confidence=confidence
+            dataset_id=dataset_id,
+            class_name=class_name,
+            confidence=confidence,
+            bbox=bbox,
+            x=x,
+            y=y,
+            width=width,
+            height=height,
+            area=width * height
         )
         
         return annotation
@@ -212,55 +225,90 @@ class AnnotationService:
     async def export_annotations(
         self,
         dataset_id: int,
-        format: str = "yolo"
+        export_format: str = "yolo",
+        destination_dir: Optional[Path] = None
     ) -> str:
         """
-        Exporta anotações de um dataset em um formato específico.
+        Exporta anotações de um dataset para treinamento YOLO.
         
         Args:
             dataset_id: ID do dataset
-            format: Formato de exportação (yolo, coco, etc.)
+            export_format: Formato de exportação (yolo, coco, etc.)
+            destination_dir: Diretório de destino personalizado (opcional)
             
         Returns:
-            Caminho do arquivo exportado
+            Caminho do diretório de exportação
         """
-        dataset = await Dataset.query.get(dataset_id)
+        dataset = Dataset.query.get(dataset_id)
         if not dataset:
             raise ValueError(f"Dataset {dataset_id} não encontrado")
         
         # Criar diretório de exportação
-        export_dir = self.annotations_dir / "exports" / str(dataset_id)
+        if destination_dir:
+            export_dir = destination_dir
+        else:
+            # Usar o nome do dataset ou ID se nome for None
+            dataset_name = dataset.name if dataset.name else f"dataset_{dataset_id}"
+            export_dir = self.training_dir / dataset_name
+        
         export_dir.mkdir(parents=True, exist_ok=True)
         
-        if format == "yolo":
-            # Criar diretório de labels
+        if export_format.lower() == "yolo":
+            # Estrutura de diretórios para YOLO
+            images_dir = export_dir / "images"
+            images_dir.mkdir(exist_ok=True)
+            
             labels_dir = export_dir / "labels"
             labels_dir.mkdir(exist_ok=True)
             
-            # Processar cada imagem
-            for image in Image.query.filter_by(dataset_id=dataset_id).all():
-                # Criar arquivo de labels
-                label_file = labels_dir / f"{Path(image.filename).stem}.txt"
-                
-                with open(label_file, "w") as f:
-                    for annotation in image.annotations:
-                        # Converter bbox para formato YOLO [x_center, y_center, width, height]
-                        x1, y1, x2, y2 = annotation.bbox
-                        x_center = (x1 + x2) / 2
-                        y_center = (y1 + y2) / 2
-                        width = x2 - x1
-                        height = y2 - y1
-                        
-                        # Normalizar coordenadas
-                        x_center /= image.width
-                        y_center /= image.height
-                        width /= image.width
-                        height /= image.height
-                        
-                        # Escrever linha no arquivo
-                        f.write(f"{annotation.class_id} {x_center} {y_center} {width} {height}\n")
-        
-        elif format == "coco":
+            # Criar subpastas para treino, validação e teste
+            for split in ["train", "val", "test"]:
+                (images_dir / split).mkdir(exist_ok=True)
+                (labels_dir / split).mkdir(exist_ok=True)
+            
+            # Criar arquivo classes.txt
+            with open(export_dir / "classes.txt", "w") as f:
+                for cls in dataset.classes:
+                    f.write(f"{cls}\n")
+            
+            # Criar arquivo data.yaml
+            data_yaml = {
+                "path": str(export_dir.absolute()),
+                "train": str((images_dir / "train").absolute()),
+                "val": str((images_dir / "val").absolute()),
+                "test": str((images_dir / "test").absolute()),
+                "names": {i: name for i, name in enumerate(dataset.classes)},
+                "nc": len(dataset.classes)
+            }
+            
+            with open(export_dir / "data.yaml", "w") as f:
+                import yaml
+                yaml.dump(data_yaml, f, sort_keys=False)
+            
+            # Processar cada imagem do dataset
+            images = Image.query.filter_by(dataset_id=dataset_id).all()
+            
+            # Dividir em treino (70%), validação (20%) e teste (10%)
+            import random
+            random.shuffle(images)
+            
+            train_idx = int(len(images) * 0.7)
+            val_idx = int(len(images) * 0.9)
+            
+            train_images = images[:train_idx]
+            val_images = images[train_idx:val_idx]
+            test_images = images[val_idx:]
+            
+            # Processar imagens de treino
+            await self._process_images_for_split(train_images, "train", images_dir, labels_dir, dataset.classes)
+            
+            # Processar imagens de validação
+            await self._process_images_for_split(val_images, "val", images_dir, labels_dir, dataset.classes)
+            
+            # Processar imagens de teste
+            await self._process_images_for_split(test_images, "test", images_dir, labels_dir, dataset.classes)
+            
+        elif export_format.lower() == "coco":
             # Criar estrutura COCO
             coco_data = {
                 "info": {
@@ -309,6 +357,204 @@ class AnnotationService:
                 json.dump(coco_data, f)
         
         else:
-            raise ValueError(f"Formato de exportação não suportado: {format}")
+            raise ValueError(f"Formato de exportação não suportado: {export_format}")
         
-        return str(export_dir) 
+        return str(export_dir)
+    
+    async def _process_images_for_split(
+        self, 
+        images: List[Image], 
+        split: str, 
+        images_dir: Path, 
+        labels_dir: Path, 
+        classes: List[str]
+    ):
+        """
+        Processa imagens para um determinado split (train/val/test)
+        
+        Args:
+            images: Lista de objetos Image
+            split: Nome do split (train, val, test)
+            images_dir: Diretório base de imagens
+            labels_dir: Diretório base de labels
+            classes: Lista de classes do dataset
+        """
+        for image in images:
+            # Copiar imagem para pasta do split
+            dest_images_dir = images_dir / split
+            image_dest = dest_images_dir / image.file_name
+            
+            # Copiar a imagem se ela existir
+            if os.path.exists(image.file_path):
+                shutil.copy(image.file_path, image_dest)
+            
+            # Criar arquivo de anotações
+            dest_labels_dir = labels_dir / split
+            label_file = dest_labels_dir / f"{Path(image.file_name).stem}.txt"
+            await self._create_yolo_annotation_file(image, label_file, classes)
+    
+    async def _create_yolo_annotation_file(self, image: Image, label_file: Path, classes: List[str]) -> None:
+        """
+        Cria um arquivo de anotação no formato YOLO para uma imagem.
+        
+        Args:
+            image: Objeto Image
+            label_file: Caminho do arquivo de saída
+            classes: Lista de classes do dataset
+        """
+        with open(label_file, "w") as f:
+            for annotation in image.annotations:
+                # Obter o índice da classe
+                class_idx = -1
+                if annotation.class_name in classes:
+                    class_idx = classes.index(annotation.class_name)
+                else:
+                    # Se a classe não estiver na lista, pular esta anotação
+                    continue
+                
+                # Extrair coordenadas do bounding box
+                # Se estiver usando bbox como JSON
+                if hasattr(annotation, 'bbox') and annotation.bbox:
+                    if isinstance(annotation.bbox, dict):
+                        x = annotation.bbox.get('x', 0)
+                        y = annotation.bbox.get('y', 0)
+                        w = annotation.bbox.get('width', 0)
+                        h = annotation.bbox.get('height', 0)
+                    elif isinstance(annotation.bbox, list) and len(annotation.bbox) == 4:
+                        # [x1, y1, x2, y2]
+                        x1, y1, x2, y2 = annotation.bbox
+                        w = x2 - x1
+                        h = y2 - y1
+                        x = x1
+                        y = y1
+                # Se estiver usando campos separados
+                elif all(hasattr(annotation, attr) for attr in ['x', 'y', 'width', 'height']):
+                    x = annotation.x
+                    y = annotation.y
+                    w = annotation.width
+                    h = annotation.height
+                else:
+                    # Se não tiver as informações necessárias, pular
+                    continue
+                
+                # Converter para formato YOLO (x_center, y_center, width, height normalizado)
+                x_center = (x + w/2) / image.width
+                y_center = (y + h/2) / image.height
+                width = w / image.width
+                height = h / image.height
+                
+                # Escrever no formato YOLO: class_idx x_center y_center width height
+                f.write(f"{class_idx} {x_center:.6f} {y_center:.6f} {width:.6f} {height:.6f}\n")
+
+    async def import_annotations(
+        self,
+        dataset_id: int, 
+        import_format: str, 
+        source_dir: Path
+    ) -> int:
+        """
+        Importa anotações de um diretório para o banco de dados.
+        
+        Args:
+            dataset_id: ID do dataset
+            import_format: Formato das anotações (yolo, coco)
+            source_dir: Diretório com as anotações
+            
+        Returns:
+            Número de anotações importadas
+        """
+        dataset = Dataset.query.get(dataset_id)
+        if not dataset:
+            raise ValueError(f"Dataset {dataset_id} não encontrado")
+        
+        count = 0
+        
+        if import_format.lower() == "yolo":
+            # Verificar arquivo de classes
+            classes_file = source_dir / "classes.txt"
+            if classes_file.exists():
+                with open(classes_file, "r") as f:
+                    classes = [line.strip() for line in f.readlines()]
+                
+                # Atualizar classes do dataset
+                dataset.classes = classes
+                
+            # Localizar arquivos de anotação
+            labels_dir = source_dir / "labels"
+            if not labels_dir.exists():
+                # Tentar encontrar labels em train/val
+                labels_dirs = [(source_dir / "labels" / "train"), (source_dir / "labels" / "val")]
+                labels_dirs = [d for d in labels_dirs if d.exists()]
+            else:
+                labels_dirs = [labels_dir]
+            
+            if not labels_dirs:
+                raise ValueError(f"Nenhum diretório de anotações encontrado em {source_dir}")
+            
+            # Processar cada arquivo de anotação
+            for labels_dir in labels_dirs:
+                for label_file in labels_dir.glob("*.txt"):
+                    # Encontrar imagem correspondente
+                    image_name = label_file.stem + ".jpg"  # tentar jpg primeiro
+                    image = Image.query.filter_by(dataset_id=dataset_id, file_name=image_name).first()
+                    
+                    if not image:
+                        # Tentar com extensão png
+                        image_name = label_file.stem + ".png"
+                        image = Image.query.filter_by(dataset_id=dataset_id, file_name=image_name).first()
+                    
+                    if not image:
+                        # Ignorar se não encontrar a imagem
+                        continue
+                    
+                    # Importar anotações
+                    with open(label_file, "r") as f:
+                        for line in f:
+                            parts = line.strip().split()
+                            if len(parts) == 5:  # class_idx x_center y_center width height
+                                class_idx = int(parts[0])
+                                x_center = float(parts[1])
+                                y_center = float(parts[2])
+                                width = float(parts[3])
+                                height = float(parts[4])
+                                
+                                # Converter para coordenadas absolutas
+                                x = (x_center - width/2) * image.width
+                                y = (y_center - height/2) * image.height
+                                w = width * image.width
+                                h = height * image.height
+                                
+                                # Criar anotação
+                                class_name = dataset.classes[class_idx] if class_idx < len(dataset.classes) else f"class_{class_idx}"
+                                annotation = Annotation(
+                                    image_id=image.id,
+                                    dataset_id=dataset_id,
+                                    class_name=class_name,
+                                    bbox={
+                                        "x": x,
+                                        "y": y,
+                                        "width": w,
+                                        "height": h
+                                    },
+                                    x=x,
+                                    y=y,
+                                    width=w,
+                                    height=h,
+                                    area=w*h
+                                )
+                                
+                                # Adicionar ao banco
+                                # Adicionar ao banco (usar o objeto de sessão adequado aqui)
+                                from microdetect.database.database import db_session
+                                db_session.add(annotation)
+                                count += 1
+            
+            # Commit das alterações
+            from microdetect.database.database import db_session
+            db_session.commit()
+            
+        elif import_format.lower() == "coco":
+            # Implementar importação COCO
+            pass
+        
+        return count 

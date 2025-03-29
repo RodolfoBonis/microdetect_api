@@ -27,4 +27,22 @@ class Annotation(Base):
     
     # Relacionamentos
     image = relationship("Image", back_populates="annotations")
-    dataset = relationship("Dataset", back_populates="annotations") 
+    dataset = relationship("Dataset", back_populates="annotations")
+    
+    @property
+    def bounding_box(self):
+        """
+        Property que retorna o bounding box no formato esperado pelo schema.
+        Usa campos x, y, width, height diretamente se bbox não estiver disponível.
+        """
+        if self.bbox is not None:
+            return self.bbox
+        elif self.x is not None and self.y is not None and self.width is not None and self.height is not None:
+            return {
+                'x': self.x,
+                'y': self.y,
+                'width': self.width,
+                'height': self.height
+            }
+        else:
+            return {'x': 0, 'y': 0, 'width': 0, 'height': 0} 

@@ -19,6 +19,9 @@ class DatasetSummary(BaseSchema):
             description=obj.description
         )
 
+# Import da classe de anotação aqui para evitar importação circular
+from microdetect.schemas.annotation import AnnotationResponse
+
 class ImageBase(BaseSchema):
     def __init__(self, 
                 file_name: str,
@@ -77,7 +80,8 @@ class ImageResponse(ImageBase):
                 height: Optional[int] = None,
                 image_metadata: Optional[Dict[str, Any]] = None,
                 dataset_id: Optional[int] = None,
-                datasets: Optional[List[DatasetSummary]] = None):
+                datasets: Optional[List[DatasetSummary]] = None,
+                annotations: Optional[List[AnnotationResponse]] = None):
         super().__init__(
             file_name=file_name,
             file_path=file_path,
@@ -92,6 +96,7 @@ class ImageResponse(ImageBase):
         self.created_at = created_at
         self.updated_at = updated_at
         self.datasets = datasets if datasets is not None else []
+        self.annotations = annotations if annotations is not None else []
     
     @classmethod
     def from_orm(cls, obj):
@@ -99,6 +104,12 @@ class ImageResponse(ImageBase):
         datasets = []
         if hasattr(obj, 'datasets') and obj.datasets:
             datasets = [DatasetSummary.from_orm(ds) for ds in obj.datasets]
+        
+        # Converter anotações se existirem
+        annotations = []
+        if hasattr(obj, 'annotations') and obj.annotations:
+            from microdetect.schemas.annotation import AnnotationResponse
+            annotations = [AnnotationResponse.from_orm(ann) for ann in obj.annotations]
             
         return cls(
             id=obj.id,
@@ -112,5 +123,6 @@ class ImageResponse(ImageBase):
             height=getattr(obj, 'height', None),
             image_metadata=getattr(obj, 'image_metadata', {}),
             dataset_id=getattr(obj, 'dataset_id', None),
-            datasets=datasets
+            datasets=datasets,
+            annotations=annotations
         ) 

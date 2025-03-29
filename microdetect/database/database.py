@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from microdetect.core.config import settings
@@ -24,8 +24,42 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 # Criar base para os modelos
 Base = declarative_base()
 
+def verify_tables_exist():
+    """Verificar se todas as tabelas existem e criar se não existirem."""
+    inspector = inspect(engine)
+    tables = inspector.get_table_names()
+    
+    # Importar todos os modelos explicitamente para registrar no Base.metadata
+    from microdetect.models.dataset import Dataset
+    from microdetect.models.image import Image
+    from microdetect.models.annotation import Annotation
+    from microdetect.models.model import Model
+    from microdetect.models.training_session import TrainingSession
+    from microdetect.models.dataset_image import DatasetImage
+    from microdetect.models.inference_result import InferenceResult
+    
+    # Verificar se todas as tabelas definidas nos modelos existem
+    missing_tables = set()
+    for table_name in Base.metadata.tables.keys():
+        if table_name not in tables:
+            missing_tables.add(table_name)
+    
+    if missing_tables:
+        logger.warning(f"Tabelas faltando no banco de dados: {missing_tables}")
+        logger.info("Criando tabelas faltantes...")
+        # Criar apenas as tabelas faltantes
+        Base.metadata.create_all(engine)
+        logger.info("Tabelas criadas com sucesso.")
+    else:
+        logger.info("Todas as tabelas existem no banco de dados.")
+    
+    return True
+
 def get_db():
     """Função para obter uma sessão do banco de dados."""
+    # Verificar se as tabelas existem antes de criar a sessão
+    verify_tables_exist()
+    
     db = SessionLocal()
     try:
         yield db

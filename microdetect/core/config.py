@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Optional, Dict, Any, Set
+from typing import Optional, Dict, Any, Set, List
 import os
 import dotenv
 from dataclasses import dataclass, field
@@ -11,23 +11,28 @@ dotenv.load_dotenv(".env")
 class Settings:
     # Configurações básicas
     API_V1_STR: str = "/api/v1"
-    PROJECT_NAME: str = "MicroDetect"
+    PROJECT_NAME: str = "MicroDetect API"
 
     # Diretórios base
-    BASE_DIR: Path = Path(__file__).resolve().parent.parent.parent
+    BASE_DIR: Path = Path(os.path.expanduser("~/.microdetect"))
     APP_DIR: Path = BASE_DIR / "app"
 
     # Diretório no home do usuário
     HOME_DIR: Path = Path.home() / ".microdetect"
 
     # Diretórios de dados (agora no ~/.microdetect)
-    DATA_DIR: Path = HOME_DIR / "data"
+    DATA_DIR: Path = BASE_DIR / "data"
     DATASETS_DIR: Path = DATA_DIR / "datasets"
     MODELS_DIR: Path = DATA_DIR / "models"
     IMAGES_DIR: Path = DATA_DIR / "images"
     GALLERY_DIR: Path = DATA_DIR / "gallery"
     TEMP_DIR: Path = DATA_DIR / "temp"
     STATIC_DIR: Path = DATA_DIR / "static"
+
+    # Diretórios específicos
+    ANNOTATIONS_DIR: Path = DATA_DIR / "annotations"
+    TRAINING_DIR: Path = DATA_DIR / "training"
+    EXPORTS_DIR: Path = DATA_DIR / "exports"
 
     # Configurações do servidor
     HOST: str = "0.0.0.0"
@@ -43,7 +48,7 @@ class Settings:
     ALLOWED_IMAGE_TYPES: Set[str] = field(default_factory=lambda: {"image/jpeg", "image/png", "image/tiff"})
 
     # Configurações do banco de dados
-    DATABASE_URL: str = os.getenv("DATABASE_URL", "")
+    DATABASE_URL: str = "sqlite:///{}".format(str(BASE_DIR / "microdetect.db"))
     
     def __post_init__(self):
         # Configurar DATABASE_URL se não foi definido por variável de ambiente
@@ -59,6 +64,9 @@ class Settings:
         self.GALLERY_DIR.mkdir(exist_ok=True)
         self.TEMP_DIR.mkdir(exist_ok=True)
         self.STATIC_DIR.mkdir(exist_ok=True)
+        self.ANNOTATIONS_DIR.mkdir(exist_ok=True)
+        self.TRAINING_DIR.mkdir(exist_ok=True)
+        self.EXPORTS_DIR.mkdir(exist_ok=True)
 
     # Configurações do modelo YOLO
     YOLO_MODEL_PATH: Path = MODELS_DIR / "best.pt"
@@ -69,5 +77,24 @@ class Settings:
     MAX_WORKERS: int = os.cpu_count() or 4
     BATCH_SIZE: int = int(os.getenv("BATCH_SIZE", "32"))
 
+    def create_directories(self):
+        """Cria os diretórios necessários para a aplicação"""
+        dirs = [
+            self.BASE_DIR,
+            self.DATA_DIR,
+            self.IMAGES_DIR,
+            self.ANNOTATIONS_DIR,
+            self.TRAINING_DIR,
+            self.MODELS_DIR,
+            self.EXPORTS_DIR,
+            self.TEMP_DIR
+        ]
+        
+        for directory in dirs:
+            directory.mkdir(parents=True, exist_ok=True)
+            
+    def __init__(self):
+        """Inicializa as configurações e cria diretórios necessários"""
+        self.create_directories()
 
 settings = Settings()

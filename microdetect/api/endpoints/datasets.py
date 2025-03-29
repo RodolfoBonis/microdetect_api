@@ -250,15 +250,20 @@ def get_dataset_statistics(
     # Distribuição de tamanhos de objetos
     object_size_distribution = None
     
+    # Inicializar a densidade média de objetos com valor padrão antes do bloco try
+    average_object_density = 0
+    
     # Tenta extrair informações de tamanho dos bounding boxes do campo JSON 'bbox'
     try:
         # Buscar todos os bounding boxes e informações de imagem
         bbox_data = db.execute(
             text("""
-            SELECT a.bbox, i.width, i.height
+            SELECT a.x, a.y, a.width, a.height, i.width as img_width, i.height as img_height
             FROM annotations a
             JOIN images i ON a.image_id = i.id
-            WHERE i.dataset_id = :dataset_id AND a.bbox IS NOT NULL
+            WHERE i.dataset_id = :dataset_id 
+            AND a.x IS NOT NULL AND a.y IS NOT NULL
+            AND a.width IS NOT NULL AND a.height IS NOT NULL
             """),
             {"dataset_id": dataset_id}
         ).fetchall()
@@ -272,61 +277,33 @@ def get_dataset_statistics(
             total_img_area = 0
             
             for row in bbox_data:
-                bbox_json = row[0]
-                img_width = row[1]
-                img_height = row[2]
+                # Extrair valores diretamente das colunas
+                x = row[0]
+                y = row[1]
+                bbox_width = row[2]
+                bbox_height = row[3]
+                img_width = row[4]
+                img_height = row[5]
                 
-                if not bbox_json or not img_width or not img_height:
+                if not x or not y or not bbox_width or not bbox_height or not img_width or not img_height:
                     continue
                 
-                try:
-                    # Tentar extrair as dimensões do bbox (pode estar em diferentes formatos)
-                    bbox = json.loads(bbox_json) if isinstance(bbox_json, str) else bbox_json
-                    
-                    # Verifica formato [x_min, y_min, width, height] ou [x_min, y_min, x_max, y_max]
-                    if len(bbox) == 4:
-                        if isinstance(bbox, list):
-                            # Formato [x_min, y_min, x_max, y_max]
-                            if bbox[2] > bbox[0] and bbox[3] > bbox[1]:
-                                bbox_width = bbox[2] - bbox[0]
-                                bbox_height = bbox[3] - bbox[1]
-                            # Formato [x_min, y_min, width, height]
-                            else:
-                                bbox_width = bbox[2]
-                                bbox_height = bbox[3]
-                        elif isinstance(bbox, dict):
-                            # Formato com keys específicas
-                            if 'width' in bbox and 'height' in bbox:
-                                bbox_width = bbox['width']
-                                bbox_height = bbox['height']
-                            elif 'x_min' in bbox and 'x_max' in bbox:
-                                bbox_width = bbox['x_max'] - bbox['x_min']
-                                bbox_height = bbox['y_max'] - bbox['y_min']
-                            else:
-                                continue
-                        else:
-                            continue
-                        
-                        # Calcular áreas
-                        obj_area = bbox_width * bbox_height
-                        img_area = img_width * img_height
-                        
-                        total_obj_area += obj_area
-                        total_img_area += img_area
-                        
-                        # Classificar objetos por tamanho relativo
-                        area_ratio = obj_area / img_area
-                        
-                        if area_ratio < 0.1:
-                            small_objects += 1
-                        elif area_ratio < 0.3:
-                            medium_objects += 1
-                        else:
-                            large_objects += 1
-                            
-                except (json.JSONDecodeError, TypeError, IndexError, KeyError):
-                    # Ignora bboxes em formato desconhecido
-                    continue
+                # Calcular áreas
+                obj_area = bbox_width * bbox_height
+                img_area = img_width * img_height
+                
+                total_obj_area += obj_area
+                total_img_area += img_area
+                
+                # Classificar objetos por tamanho relativo
+                area_ratio = obj_area / img_area
+                
+                if area_ratio < 0.1:
+                    small_objects += 1
+                elif area_ratio < 0.3:
+                    medium_objects += 1
+                else:
+                    large_objects += 1
             
             # Criar distribuição de tamanhos se houver objetos classificados
             total_sized_objects = small_objects + medium_objects + large_objects
@@ -338,13 +315,13 @@ def get_dataset_statistics(
                 }
                 
                 # Calcular densidade média de objetos
-                average_object_density = 0  # Valor padrão inicializado
                 if total_img_area > 0:
                     average_object_density = total_obj_area / total_img_area
-    except Exception:
-        # Inicializar average_object_density caso não tenha sido definido no bloco try
-        average_object_density = 0
-        # Ignorar erros ao processar bboxes
+    except Exception as e:
+        # Log do erro para facilitar depuração
+        import logging
+        logging.error(f"Erro ao processar tamanhos de objetos: {str(e)}")
+        # Mantém o valor padrão já inicializado de average_object_density
         pass
     
     # Calcular desbalanceamento de classes

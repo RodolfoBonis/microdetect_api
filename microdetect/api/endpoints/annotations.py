@@ -248,4 +248,193 @@ def get_dataset_classes(dataset_id: int, db: Session = Depends(get_db)):
                 "is_defined": False
             })
     
-    return build_response(result) 
+    return build_response(result)
+
+@router.post("/dataset/{dataset_id}/export", response_model=None)
+async def export_dataset_annotations(
+    dataset_id: int,
+    export_format: str = "yolo",
+    destination: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    """
+    Exporta as anotações de um dataset para o formato YOLO ou outro formato compatível.
+    
+    Args:
+        dataset_id: ID do dataset
+        export_format: Formato de exportação (yolo, coco)
+        destination: Diretório de destino (opcional)
+    
+    Returns:
+        Caminho do diretório de exportação
+    """
+    from microdetect.services.annotation_service import AnnotationService
+    from pathlib import Path
+    
+    # Verificar se o dataset existe
+    dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not dataset:
+        return build_error_response("Dataset não encontrado", 404)
+    
+    # Verificar se há imagens e anotações
+    image_count = db.query(Image).filter(Image.dataset_id == dataset_id).count()
+    if image_count == 0:
+        return build_error_response("Dataset não contém imagens", 400)
+    
+    # Criar serviço de anotação
+    annotation_service = AnnotationService()
+    
+    try:
+        # Definir diretório de destino, se fornecido
+        destination_dir = Path(destination) if destination else None
+        
+        # Exportar anotações
+        export_path = await annotation_service.export_annotations(
+            dataset_id=dataset_id,
+            export_format=export_format,
+            destination_dir=destination_dir
+        )
+        
+        return build_response({
+            "message": f"Anotações exportadas com sucesso para o formato {export_format}",
+            "export_path": export_path,
+            "export_format": export_format,
+            "dataset_id": dataset_id,
+            "image_count": image_count
+        })
+    
+    except Exception as e:
+        return build_error_response(f"Erro ao exportar anotações: {str(e)}", 500)
+
+@router.post("/dataset/{dataset_id}/import", response_model=None)
+async def import_dataset_annotations(
+    dataset_id: int,
+    import_format: str = "yolo",
+    source_dir: str = None,
+    db: Session = Depends(get_db)
+):
+    """
+    Importa anotações para um dataset a partir de arquivos no formato YOLO ou outro formato compatível.
+    
+    Args:
+        dataset_id: ID do dataset
+        import_format: Formato das anotações (yolo, coco)
+        source_dir: Diretório contendo as anotações
+    
+    Returns:
+        Número de anotações importadas
+    """
+    from microdetect.services.annotation_service import AnnotationService
+    from pathlib import Path
+    
+    # Verificar se o dataset existe
+    dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not dataset:
+        return build_error_response("Dataset não encontrado", 404)
+    
+    if not source_dir:
+        return build_error_response("Diretório de origem não especificado", 400)
+    
+    # Verificar se o diretório existe
+    source_path = Path(source_dir)
+    if not source_path.exists() or not source_path.is_dir():
+        return build_error_response(f"Diretório não encontrado: {source_dir}", 404)
+    
+    # Criar serviço de anotação
+    annotation_service = AnnotationService()
+    
+    try:
+        # Importar anotações
+        count = await annotation_service.import_annotations(
+            dataset_id=dataset_id,
+            import_format=import_format,
+            source_dir=source_path
+        )
+        
+        return build_response({
+            "message": f"Importação concluída com sucesso",
+            "annotations_imported": count,
+            "import_format": import_format,
+            "dataset_id": dataset_id
+        })
+    
+    except Exception as e:
+        return build_error_response(f"Erro ao importar anotações: {str(e)}", 500)
+
+@router.post("/dataset/{dataset_id}/convert-to-yolo", response_model=None)
+async def convert_annotations_to_yolo(
+    dataset_id: int,
+    destination: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    """
+    Converte as anotações de um dataset para o formato YOLO e prepara a estrutura 
+    de diretórios para treinamento seguindo o padrão YOLO.
+    
+    A estrutura será criada conforme abaixo:
+    - ~/.microdetect/data/training/nome_do_dataset/
+      - images/
+        - train/
+        - val/
+        - test/
+      - labels/
+        - train/
+        - val/
+        - test/
+      - data.yaml
+    
+    Args:
+        dataset_id: ID do dataset
+        destination: Diretório de destino (opcional)
+    
+    Returns:
+        Informações sobre a exportação e caminho do diretório de treinamento
+    """
+    from microdetect.services.annotation_service import AnnotationService
+    from pathlib import Path
+    
+    # Verificar se o dataset existe
+    dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not dataset:
+        return build_error_response("Dataset não encontrado", 404)
+    
+    # Verificar se há imagens
+    image_count = db.query(Image).filter(Image.dataset_id == dataset_id).count()
+    if image_count == 0:
+        return build_error_response("Dataset não contém imagens", 400)
+    
+    # Verificar se há anotações
+    annotation_count = db.query(Annotation).join(Image).filter(
+        (Image.dataset_id == dataset_id) | 
+        (Annotation.dataset_id == dataset_id)
+    ).count()
+    
+    if annotation_count == 0:
+        return build_error_response("Dataset não contém anotações", 400)
+    
+    # Criar serviço de anotação
+    annotation_service = AnnotationService()
+    
+    try:
+        # Definir diretório de destino, se fornecido
+        destination_dir = Path(destination) if destination else None
+        
+        # Exportar anotações
+        export_path = await annotation_service.export_annotations(
+            dataset_id=dataset_id,
+            export_format="yolo",
+            destination_dir=destination_dir
+        )
+        
+        return build_response({
+            "message": "Dataset convertido com sucesso para o formato YOLO",
+            "export_path": export_path,
+            "dataset_id": dataset_id,
+            "dataset_name": dataset.name,
+            "image_count": image_count,
+            "annotation_count": annotation_count,
+            "classes": dataset.classes
+        })
+    
+    except Exception as e:
+        return build_error_response(f"Erro ao converter dataset para YOLO: {str(e)}", 500) 
