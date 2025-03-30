@@ -117,37 +117,53 @@ def update_annotation(
     db: Session = Depends(get_db)
 ):
     """Atualiza uma anotação existente"""
-    db_annotation = db.query(Annotation).filter(Annotation.id == annotation_id).first()
-    if db_annotation is None:
-        return build_error_response("Anotação não encontrada", 404)
-    
-    # Criar instância de AnnotationUpdate a partir do dict recebido
-    annotation = AnnotationUpdate(**annotation_dict)
-    
-    # Se estiver atualizando a classe, verificar se ela existe no dataset
-    if hasattr(annotation, 'class_name') and annotation.class_name is not None:
-        dataset_id = db_annotation.dataset_id
-        if dataset_id:
-            dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
-            if dataset and dataset.classes:
-                if annotation.class_name not in dataset.classes:
-                    # Se a classe não existe no dataset, adicioná-la
-                    classes = dataset.classes or []
-                    classes.append(annotation.class_name)
-                    dataset.classes = classes
-                    db.commit()
-    
-    # Atualizar os campos da anotação
-    annotation_data = annotation.dict(exclude_unset=True)
-    for key, value in annotation_data.items():
-        setattr(db_annotation, key, value)
-    
-    db.commit()
-    db.refresh(db_annotation)
-    
-    # Converter para esquema de resposta
-    response = AnnotationResponse.from_orm(db_annotation)
-    return build_response(response)
+    try:
+        db_annotation = db.query(Annotation).filter(Annotation.id == annotation_id).first()
+        if db_annotation is None:
+            return build_error_response("Anotação não encontrada", 404)
+        
+        # Remover campos que não são aceitos pelo schema de atualização
+        if 'id' in annotation_dict:
+            del annotation_dict['id']
+        
+        # Criar instância de AnnotationUpdate a partir do dict recebido
+        annotation = AnnotationUpdate(**annotation_dict)
+        
+        # Se estiver atualizando a classe, verificar se ela existe no dataset
+        if hasattr(annotation, 'class_name') and annotation.class_name is not None:
+            dataset_id = db_annotation.dataset_id
+            if dataset_id:
+                dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+                if dataset and dataset.classes:
+                    if annotation.class_name not in dataset.classes:
+                        # Se a classe não existe no dataset, adicioná-la
+                        classes = dataset.classes or []
+                        classes.append(annotation.class_name)
+                        dataset.classes = classes
+                        db.commit()
+        
+        # Extrair valores do bounding_box para os campos do modelo, se fornecido
+        annotation_data = annotation.dict(exclude_unset=True)
+        if 'bounding_box' in annotation_data:
+            bbox = annotation_data.pop('bounding_box')
+            annotation_data['bbox'] = bbox
+            annotation_data['x'] = bbox.get('x')
+            annotation_data['y'] = bbox.get('y')
+            annotation_data['width'] = bbox.get('width')
+            annotation_data['height'] = bbox.get('height')
+        
+        # Atualizar os campos da anotação
+        for key, value in annotation_data.items():
+            setattr(db_annotation, key, value)
+        
+        db.commit()
+        db.refresh(db_annotation)
+        
+        # Converter para esquema de resposta
+        response = AnnotationResponse.from_orm(db_annotation)
+        return build_response(response)
+    except Exception as e:
+        return build_error_response(f"Erro ao atualizar anotação: {str(e)}", 500)
 
 @router.delete("/{annotation_id}", response_model=None)
 def delete_annotation(annotation_id: int, db: Session = Depends(get_db)):
