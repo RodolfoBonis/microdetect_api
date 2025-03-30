@@ -123,7 +123,10 @@ def list_images(
     # Executar a query com paginação
     images = query.offset(skip).limit(limit).all()
     
-    # Para cada imagem, buscar os datasets associados
+    # Lista para armazenar os resultados simplificados
+    simplified_images = []
+    
+    # Para cada imagem, preparar uma resposta simplificada
     for image in images:
         # Obter as associações através da tabela pivô
         dataset_associations = db.query(DatasetImage).filter(DatasetImage.image_id == image.id).all()
@@ -132,28 +135,59 @@ def list_images(
         # Incluir também o dataset_id primário, se existir
         if image.dataset_id is not None and image.dataset_id not in dataset_ids:
             dataset_ids.append(image.dataset_id)
-            
-        # Se não há datasets associados, continuar para a próxima imagem
-        if not dataset_ids:
-            image.datasets = []
-            continue
-            
-        # Buscar os datasets correspondentes
-        datasets = db.query(Dataset).filter(Dataset.id.in_(dataset_ids)).all()
         
-        # Atribuir à propriedade datasets da imagem
-        image.datasets = datasets
+        # Preparar lista simplificada de datasets
+        datasets = []
+        if dataset_ids:
+            # Buscar os datasets correspondentes
+            db_datasets = db.query(Dataset).filter(Dataset.id.in_(dataset_ids)).all()
+            datasets = [
+                {
+                    "id": d.id,
+                    "name": d.name,
+                    "description": d.description
+                }
+                for d in db_datasets
+            ]
         
-        # Buscar e atribuir anotações se solicitado
+        # Preparar lista simplificada de anotações, se solicitado
+        annotations = []
         if with_annotations:
             from microdetect.models.annotation import Annotation
-            image.annotations = db.query(Annotation).filter(Annotation.image_id == image.id).all()
-        else:
-            image.annotations = []
+            db_annotations = db.query(Annotation).filter(Annotation.image_id == image.id).all()
+            annotations = [
+                {
+                    "id": a.id,
+                    "class_name": a.class_name,
+                    "x": a.x,
+                    "y": a.y,
+                    "width": a.width,
+                    "height": a.height,
+                    "confidence": a.confidence
+                }
+                for a in db_annotations
+            ]
+        
+        # Criar um dicionário com os dados simplificados da imagem
+        image_data = {
+            "id": image.id,
+            "file_name": image.file_name,
+            "file_path": image.file_path,
+            "url": image.url,
+            "width": image.width,
+            "height": image.height,
+            "file_size": image.file_size,
+            "dataset_id": image.dataset_id,
+            "created_at": image.created_at.isoformat() if image.created_at else None,
+            "updated_at": image.updated_at.isoformat() if image.updated_at else None,
+            "datasets": datasets,
+            "annotations": annotations
+        }
+        
+        simplified_images.append(image_data)
     
-    # Converter modelos ORM para classes de resposta
-    response_list = [ImageResponse.from_orm(image) for image in images]
-    return build_response(response_list)
+    # Retornar a lista simplificada
+    return build_response(simplified_images)
 
 @router.get("/{image_id}", response_model=None)
 def get_image(
@@ -165,7 +199,7 @@ def get_image(
     # Buscar a imagem pelo ID
     image = db.query(Image).filter(Image.id == image_id).first()
     if image is None:
-        raise HTTPException(status_code=404, detail="Imagem não encontrada")
+        return build_error_response("Imagem não encontrada", 404)
     
     # Obter as associações através da tabela pivô
     dataset_associations = db.query(DatasetImage).filter(DatasetImage.image_id == image.id).all()
@@ -174,27 +208,57 @@ def get_image(
     # Incluir também o dataset_id primário, se existir
     if image.dataset_id is not None and image.dataset_id not in dataset_ids:
         dataset_ids.append(image.dataset_id)
-        
-    # Se não há datasets associados, retornar a imagem sem datasets
-    if not dataset_ids:
-        image.datasets = []
-    else:
-        # Buscar os datasets correspondentes
-        datasets = db.query(Dataset).filter(Dataset.id.in_(dataset_ids)).all()
-        
-        # Atribuir à propriedade datasets da imagem
-        image.datasets = datasets
     
-    # Buscar e atribuir anotações se solicitado
+    # Preparar lista simplificada de datasets
+    datasets = []
+    if dataset_ids:
+        # Buscar os datasets correspondentes
+        db_datasets = db.query(Dataset).filter(Dataset.id.in_(dataset_ids)).all()
+        datasets = [
+            {
+                "id": d.id,
+                "name": d.name,
+                "description": d.description
+            }
+            for d in db_datasets
+        ]
+    
+    # Preparar lista simplificada de anotações, se solicitado
+    annotations = []
     if with_annotations:
         from microdetect.models.annotation import Annotation
-        image.annotations = db.query(Annotation).filter(Annotation.image_id == image.id).all()
-    else:
-        image.annotations = []
+        db_annotations = db.query(Annotation).filter(Annotation.image_id == image.id).all()
+        annotations = [
+            {
+                "id": a.id,
+                "class_name": a.class_name,
+                "x": a.x,
+                "y": a.y,
+                "width": a.width,
+                "height": a.height,
+                "confidence": a.confidence
+            }
+            for a in db_annotations
+        ]
     
-    # Converter o modelo ORM para a classe de resposta
-    response = ImageResponse.from_orm(image)
-    return build_response(response)
+    # Criar um dicionário com os dados simplificados da imagem
+    image_data = {
+        "id": image.id,
+        "file_name": image.file_name,
+        "file_path": image.file_path,
+        "url": image.url,
+        "width": image.width,
+        "height": image.height,
+        "file_size": image.file_size,
+        "dataset_id": image.dataset_id,
+        "created_at": image.created_at.isoformat() if image.created_at else None,
+        "updated_at": image.updated_at.isoformat() if image.updated_at else None,
+        "datasets": datasets,
+        "annotations": annotations
+    }
+    
+    # Retornar o dicionário simplificado
+    return build_response(image_data)
 
 @router.put("/{image_id}", response_model=None)
 def update_image(
@@ -205,20 +269,23 @@ def update_image(
     """Atualiza uma imagem existente."""
     db_image = db.query(Image).filter(Image.id == image_id).first()
     if db_image is None:
-        raise HTTPException(status_code=404, detail="Imagem não encontrada")
+        return build_error_response("Imagem não encontrada", 404)
     
-    # Criar instância de ImageUpdate a partir do dict recebido
-    image_update = ImageUpdate(**image_update_dict)
-    
-    for key, value in image_update.dict(exclude_unset=True).items():
-        setattr(db_image, key, value)
-    
-    db.commit()
-    db.refresh(db_image)
-    
-    # Converter o modelo ORM para a classe de resposta
-    response = ImageResponse.from_orm(db_image)
-    return build_response(response)
+    try:
+        # Criar instância de ImageUpdate a partir do dict recebido
+        image_update = ImageUpdate(**image_update_dict)
+        
+        for key, value in image_update.dict(exclude_unset=True).items():
+            setattr(db_image, key, value)
+        
+        db.commit()
+        db.refresh(db_image)
+        
+        # Converter o modelo ORM para a classe de resposta
+        response = ImageResponse.from_orm(db_image)
+        return build_response(response)
+    except Exception as e:
+        return build_error_response(f"Erro ao atualizar imagem: {str(e)}", 500)
 
 @router.delete("/{image_id}")
 def delete_image(image_id: int, db: Session = Depends(get_db)):

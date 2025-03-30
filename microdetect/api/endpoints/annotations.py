@@ -20,38 +20,57 @@ def create_annotation(
     db: Session = Depends(get_db)
 ):
     """Cria uma nova anotação"""
-    # Criar instância de AnnotationCreate a partir do dict recebido
-    annotation = AnnotationCreate(**annotation_dict)
-    
-    # Verificar se a imagem existe
-    image = db.query(Image).filter(Image.id == annotation.image_id).first()
-    if not image:
-        return build_error_response("Imagem não encontrada", 404)
-    
-    # Se o dataset_id foi fornecido, verificar se existe
-    if annotation.dataset_id:
-        dataset = db.query(Dataset).filter(Dataset.id == annotation.dataset_id).first()
-        if not dataset:
-            return build_error_response("Dataset não encontrado", 404)
+    try:
+        # Criar instância de AnnotationCreate a partir do dict recebido
+        annotation = AnnotationCreate(**annotation_dict)
         
-        # Verificar se a classe está definida no dataset
-        if annotation.class_name and dataset.classes:
-            if annotation.class_name not in dataset.classes:
-                # Se a classe não existe no dataset, adicioná-la
-                classes = dataset.classes or []
-                classes.append(annotation.class_name)
-                dataset.classes = classes
-                db.commit()
-    
-    # Criar a anotação
-    db_annotation = Annotation(**annotation.dict())
-    db.add(db_annotation)
-    db.commit()
-    db.refresh(db_annotation)
-    
-    # Converter para esquema de resposta
-    response = AnnotationResponse.from_orm(db_annotation)
-    return build_response(response)
+        # Verificar se a imagem existe
+        image = db.query(Image).filter(Image.id == annotation.image_id).first()
+        if not image:
+            return build_error_response("Imagem não encontrada", 404)
+        
+        # Se o dataset_id foi fornecido, verificar se existe
+        if annotation.dataset_id:
+            dataset = db.query(Dataset).filter(Dataset.id == annotation.dataset_id).first()
+            if not dataset:
+                return build_error_response("Dataset não encontrado", 404)
+            
+            # Verificar se a classe está definida no dataset
+            if annotation.class_name and dataset.classes:
+                if annotation.class_name not in dataset.classes:
+                    # Se a classe não existe no dataset, adicioná-la
+                    classes = dataset.classes or []
+                    classes.append(annotation.class_name)
+                    dataset.classes = classes
+                    db.commit()
+        
+        # Preparar os dados para o modelo Annotation
+        # Campos válidos para o modelo Annotation (sem bounding_box, que é processado abaixo)
+        valid_fields = ['image_id', 'dataset_id', 'class_name', 'confidence', 'metadata']
+        
+        # Filtrar apenas campos válidos para evitar erro com campos extras (como class_id)
+        filtered_data = {k: v for k, v in annotation.dict().items() if k in valid_fields}
+        
+        # Extrair valores do bounding_box para os campos do modelo
+        if hasattr(annotation, 'bounding_box') and annotation.bounding_box:
+            bbox = annotation.bounding_box
+            filtered_data['bbox'] = bbox
+            filtered_data['x'] = bbox.get('x')
+            filtered_data['y'] = bbox.get('y')
+            filtered_data['width'] = bbox.get('width')
+            filtered_data['height'] = bbox.get('height')
+        
+        # Criar a anotação
+        db_annotation = Annotation(**filtered_data)
+        db.add(db_annotation)
+        db.commit()
+        db.refresh(db_annotation)
+        
+        # Converter para esquema de resposta
+        response = AnnotationResponse.from_orm(db_annotation)
+        return build_response(response)
+    except Exception as e:
+        return build_error_response(f"Erro ao criar anotação: {str(e)}", 500)
 
 @router.get("/", response_model=None)
 def list_annotations(
@@ -204,9 +223,16 @@ def create_annotations_batch(
     for annotation in results:
         db.refresh(annotation)
     
-    # Converter para esquema de resposta
-    response_list = [AnnotationResponse.from_orm(annotation) for annotation in results]
-    return build_response(response_list)
+    # Em vez de retornar os objetos completos, retornar apenas os IDs e informação básica
+    # para evitar problemas de serialização
+    response_data = {
+        "success": True,
+        "count": len(results),
+        "message": f"{len(results)} anotações criadas com sucesso",
+        "annotation_ids": [annotation.id for annotation in results]
+    }
+    
+    return build_response(response_data)
 
 @router.get("/dataset/{dataset_id}/classes", response_model=None)
 def get_dataset_classes(dataset_id: int, db: Session = Depends(get_db)):
