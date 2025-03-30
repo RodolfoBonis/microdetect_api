@@ -148,34 +148,38 @@ def create_annotations_batch(
     db: Session = Depends(get_db)
 ):
     """Cria múltiplas anotações em lote"""
-    # Criar instância de AnnotationBatch a partir do dict recebido
-    annotations = AnnotationBatch(**annotations_dict)
+    # Extrair image_id e dataset_id diretamente do dict
+    image_id = annotations_dict.get("image_id")
+    dataset_id = annotations_dict.get("dataset_id")
+    annotations_list = annotations_dict.get("annotations", [])
+    
+    if not image_id:
+        return build_error_response("image_id é obrigatório", 400)
     
     results = []
     
     # Verificar se a imagem existe
-    image = db.query(Image).filter(Image.id == annotations.image_id).first()
+    image = db.query(Image).filter(Image.id == image_id).first()
     if not image:
         return build_error_response("Imagem não encontrada", 404)
     
     # Se o dataset_id foi fornecido, verificar se existe
     dataset = None
-    if annotations.dataset_id:
-        dataset = db.query(Dataset).filter(Dataset.id == annotations.dataset_id).first()
+    if dataset_id:
+        dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
         if not dataset:
             return build_error_response("Dataset não encontrado", 404)
     
     # Processar cada anotação do lote
-    for annotation_data in annotations.annotations:
-        # Definir image_id e dataset_id do lote para esta anotação
-        annotation_dict = annotation_data.dict()
-        annotation_dict["image_id"] = annotations.image_id
-        if annotations.dataset_id:
-            annotation_dict["dataset_id"] = annotations.dataset_id
+    for annotation_data in annotations_list:
+        # Adicionar image_id e dataset_id a cada anotação
+        annotation_data["image_id"] = image_id
+        if dataset_id:
+            annotation_data["dataset_id"] = dataset_id
         
         # Verificar se a classe está definida no dataset
-        if dataset and annotation_dict.get("class_name"):
-            class_name = annotation_dict["class_name"]
+        if dataset and annotation_data.get("class_name"):
+            class_name = annotation_data["class_name"]
             if dataset.classes and class_name not in dataset.classes:
                 # Se a classe não existe no dataset, adicioná-la
                 classes = dataset.classes or []
@@ -184,7 +188,7 @@ def create_annotations_batch(
                 db.commit()
         
         # Criar a anotação
-        db_annotation = Annotation(**annotation_dict)
+        db_annotation = Annotation(**annotation_data)
         db.add(db_annotation)
         results.append(db_annotation)
     
