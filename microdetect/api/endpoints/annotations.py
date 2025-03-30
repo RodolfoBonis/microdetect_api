@@ -170,16 +170,22 @@ def create_annotations_batch(
         if not dataset:
             return build_error_response("Dataset não encontrado", 404)
     
+    # Campos válidos para o modelo Annotation
+    valid_fields = ['image_id', 'dataset_id', 'class_name', 'x', 'y', 'width', 'height', 'confidence', 'source', 'metadata']
+    
     # Processar cada anotação do lote
     for annotation_data in annotations_list:
+        # Filtrar apenas campos válidos para evitar erro com campos extras (como class_id)
+        filtered_data = {k: v for k, v in annotation_data.items() if k in valid_fields}
+        
         # Adicionar image_id e dataset_id a cada anotação
-        annotation_data["image_id"] = image_id
+        filtered_data["image_id"] = image_id
         if dataset_id:
-            annotation_data["dataset_id"] = dataset_id
+            filtered_data["dataset_id"] = dataset_id
         
         # Verificar se a classe está definida no dataset
-        if dataset and annotation_data.get("class_name"):
-            class_name = annotation_data["class_name"]
+        if dataset and filtered_data.get("class_name"):
+            class_name = filtered_data["class_name"]
             if dataset.classes and class_name not in dataset.classes:
                 # Se a classe não existe no dataset, adicioná-la
                 classes = dataset.classes or []
@@ -188,7 +194,7 @@ def create_annotations_batch(
                 db.commit()
         
         # Criar a anotação
-        db_annotation = Annotation(**annotation_data)
+        db_annotation = Annotation(**filtered_data)
         db.add(db_annotation)
         results.append(db_annotation)
     
