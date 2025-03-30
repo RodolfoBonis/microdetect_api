@@ -21,6 +21,12 @@ def create_annotation(
 ):
     """Cria uma nova anotação"""
     try:
+        # Extrair coordenadas, se fornecidas diretamente
+        coords = {}
+        for field in ['x', 'y', 'width', 'height']:
+            if field in annotation_dict:
+                coords[field] = annotation_dict[field]
+        
         # Criar instância de AnnotationCreate a partir do dict recebido
         annotation = AnnotationCreate(**annotation_dict)
         
@@ -51,14 +57,34 @@ def create_annotation(
         # Filtrar apenas campos válidos para evitar erro com campos extras (como class_id)
         filtered_data = {k: v for k, v in annotation.dict().items() if k in valid_fields}
         
-        # Extrair valores do bounding_box para os campos do modelo
+        # Processar bounding_box
         if hasattr(annotation, 'bounding_box') and annotation.bounding_box:
             bbox = annotation.bounding_box
             filtered_data['bbox'] = bbox
+            
+            # Atualizar coordenadas do bounding_box
             filtered_data['x'] = bbox.get('x')
             filtered_data['y'] = bbox.get('y')
             filtered_data['width'] = bbox.get('width')
             filtered_data['height'] = bbox.get('height')
+        else:
+            # Se não tiver bounding_box mas tiver coordenadas diretas, usar elas
+            for field in ['x', 'y', 'width', 'height']:
+                if field in coords:
+                    filtered_data[field] = coords[field]
+            
+            # Criar bbox com base nas coordenadas diretas
+            if all(field in filtered_data for field in ['x', 'y', 'width', 'height']):
+                filtered_data['bbox'] = {
+                    'x': filtered_data['x'],
+                    'y': filtered_data['y'],
+                    'width': filtered_data['width'],
+                    'height': filtered_data['height']
+                }
+        
+        # Calcular área automaticamente
+        if 'width' in filtered_data and 'height' in filtered_data:
+            filtered_data['area'] = filtered_data['width'] * filtered_data['height']
         
         # Criar a anotação
         db_annotation = Annotation(**filtered_data)
@@ -66,9 +92,24 @@ def create_annotation(
         db.commit()
         db.refresh(db_annotation)
         
-        # Converter para esquema de resposta
-        response = AnnotationResponse.from_orm(db_annotation)
-        return build_response(response)
+        # Criar uma resposta simplificada sem referências circulares
+        simplified_response = {
+            "id": db_annotation.id,
+            "image_id": db_annotation.image_id,
+            "dataset_id": db_annotation.dataset_id,
+            "class_name": db_annotation.class_name,
+            "confidence": db_annotation.confidence,
+            "x": db_annotation.x,
+            "y": db_annotation.y,
+            "width": db_annotation.width,
+            "height": db_annotation.height,
+            "area": db_annotation.area,
+            "bbox": db_annotation.bbox,
+            "created_at": db_annotation.created_at.isoformat() if db_annotation.created_at else None,
+            "updated_at": db_annotation.updated_at.isoformat() if db_annotation.updated_at else None
+        }
+        
+        return build_response(simplified_response)
     except Exception as e:
         return build_error_response(f"Erro ao criar anotação: {str(e)}", 500)
 
@@ -82,33 +123,71 @@ def list_annotations(
     db: Session = Depends(get_db)
 ):
     """Lista anotações com filtros opcionais"""
-    query = db.query(Annotation)
-    
-    if image_id:
-        query = query.filter(Annotation.image_id == image_id)
-    
-    if dataset_id:
-        query = query.filter(Annotation.dataset_id == dataset_id)
-    
-    if class_name:
-        query = query.filter(Annotation.class_name == class_name)
-    
-    annotations = query.offset(skip).limit(limit).all()
-    
-    # Converter para esquema de resposta
-    response_list = [AnnotationResponse.from_orm(annotation) for annotation in annotations]
-    return build_response(response_list)
+    try:
+        query = db.query(Annotation)
+        
+        if image_id:
+            query = query.filter(Annotation.image_id == image_id)
+        
+        if dataset_id:
+            query = query.filter(Annotation.dataset_id == dataset_id)
+        
+        if class_name:
+            query = query.filter(Annotation.class_name == class_name)
+        
+        annotations = query.offset(skip).limit(limit).all()
+        
+        # Criar resposta simplificada para cada anotação
+        simplified_annotations = []
+        for annotation in annotations:
+            simplified_annotations.append({
+                "id": annotation.id,
+                "image_id": annotation.image_id,
+                "dataset_id": annotation.dataset_id,
+                "class_name": annotation.class_name,
+                "confidence": annotation.confidence,
+                "x": annotation.x,
+                "y": annotation.y,
+                "width": annotation.width,
+                "height": annotation.height,
+                "area": annotation.area,
+                "bbox": annotation.bbox,
+                "created_at": annotation.created_at.isoformat() if annotation.created_at else None,
+                "updated_at": annotation.updated_at.isoformat() if annotation.updated_at else None
+            })
+        
+        return build_response(simplified_annotations)
+    except Exception as e:
+        return build_error_response(f"Erro ao listar anotações: {str(e)}", 500)
 
 @router.get("/{annotation_id}", response_model=None)
 def get_annotation(annotation_id: int, db: Session = Depends(get_db)):
     """Obtém uma anotação específica"""
-    annotation = db.query(Annotation).filter(Annotation.id == annotation_id).first()
-    if annotation is None:
-        return build_error_response("Anotação não encontrada", 404)
-    
-    # Converter para esquema de resposta
-    response = AnnotationResponse.from_orm(annotation)
-    return build_response(response)
+    try:
+        annotation = db.query(Annotation).filter(Annotation.id == annotation_id).first()
+        if annotation is None:
+            return build_error_response("Anotação não encontrada", 404)
+        
+        # Criar uma resposta simplificada sem referências circulares
+        simplified_response = {
+            "id": annotation.id,
+            "image_id": annotation.image_id,
+            "dataset_id": annotation.dataset_id,
+            "class_name": annotation.class_name,
+            "confidence": annotation.confidence,
+            "x": annotation.x,
+            "y": annotation.y,
+            "width": annotation.width,
+            "height": annotation.height,
+            "area": annotation.area,
+            "bbox": annotation.bbox,
+            "created_at": annotation.created_at.isoformat() if annotation.created_at else None,
+            "updated_at": annotation.updated_at.isoformat() if annotation.updated_at else None
+        }
+        
+        return build_response(simplified_response)
+    except Exception as e:
+        return build_error_response(f"Erro ao buscar anotação: {str(e)}", 500)
 
 @router.put("/{annotation_id}", response_model=None)
 def update_annotation(
@@ -122,16 +201,26 @@ def update_annotation(
         if db_annotation is None:
             return build_error_response("Anotação não encontrada", 404)
         
-        # Remover campos que não são aceitos pelo schema de atualização
-        fields_to_remove = ['id', 'x', 'y', 'width', 'height']
-        for field in fields_to_remove:
+        # Extrair coordenadas e dimensões, se fornecidas
+        coords = {}
+        for field in ['x', 'y', 'width', 'height']:
             if field in annotation_dict:
-                del annotation_dict[field]
+                coords[field] = annotation_dict[field]
         
-        # Extrair e guardar bounding_box separadamente, se existir
+        # Extrair bounding_box separadamente, se existir
         bounding_box = None
         if 'bounding_box' in annotation_dict:
             bounding_box = annotation_dict['bounding_box']
+            # Extrair coordenadas do bounding_box se não fornecidas diretamente
+            for field in ['x', 'y', 'width', 'height']:
+                if field not in coords and field in bounding_box:
+                    coords[field] = bounding_box[field]
+        
+        # Remover campos que não são aceitos pelo schema de atualização
+        fields_to_remove = ['id', 'x', 'y', 'width', 'height', 'bounding_box', 'area']
+        for field in fields_to_remove:
+            if field in annotation_dict:
+                del annotation_dict[field]
         
         # Criar instância de AnnotationUpdate a partir do dict recebido
         annotation = AnnotationUpdate(**annotation_dict)
@@ -154,20 +243,50 @@ def update_annotation(
         for key, value in annotation_data.items():
             setattr(db_annotation, key, value)
         
-        # Atualizar separadamente os campos de bounding_box, se foi fornecido
-        if bounding_box:
-            db_annotation.bbox = bounding_box
-            db_annotation.x = bounding_box.get('x')
-            db_annotation.y = bounding_box.get('y')
-            db_annotation.width = bounding_box.get('width')
-            db_annotation.height = bounding_box.get('height')
+        # Atualizar coordenadas e dimensões, se fornecidas
+        if coords:
+            if 'x' in coords:
+                db_annotation.x = coords['x']
+            if 'y' in coords:
+                db_annotation.y = coords['y']
+            if 'width' in coords:
+                db_annotation.width = coords['width']
+            if 'height' in coords:
+                db_annotation.height = coords['height']
+            
+            # Calcular área automaticamente se width e height estiverem disponíveis
+            if db_annotation.width is not None and db_annotation.height is not None:
+                db_annotation.area = db_annotation.width * db_annotation.height
+            
+            # Atualizar o bbox com base nas coordenadas atualizadas
+            db_annotation.bbox = {
+                'x': db_annotation.x,
+                'y': db_annotation.y,
+                'width': db_annotation.width,
+                'height': db_annotation.height
+            }
         
         db.commit()
         db.refresh(db_annotation)
         
-        # Converter para esquema de resposta
-        response = AnnotationResponse.from_orm(db_annotation)
-        return build_response(response)
+        # Criar uma resposta simplificada sem referências circulares
+        simplified_response = {
+            "id": db_annotation.id,
+            "image_id": db_annotation.image_id,
+            "dataset_id": db_annotation.dataset_id,
+            "class_name": db_annotation.class_name,
+            "confidence": db_annotation.confidence,
+            "x": db_annotation.x,
+            "y": db_annotation.y,
+            "width": db_annotation.width,
+            "height": db_annotation.height,
+            "area": db_annotation.area,
+            "bbox": db_annotation.bbox,
+            "created_at": db_annotation.created_at.isoformat() if db_annotation.created_at else None,
+            "updated_at": db_annotation.updated_at.isoformat() if db_annotation.updated_at else None
+        }
+        
+        return build_response(simplified_response)
     except Exception as e:
         return build_error_response(f"Erro ao atualizar anotação: {str(e)}", 500)
 
@@ -233,6 +352,18 @@ def create_annotations_batch(
                 classes.append(class_name)
                 dataset.classes = classes
                 db.commit()
+        
+        # Criar bbox com base nas coordenadas, se não fornecido
+        if all(field in filtered_data for field in ['x', 'y', 'width', 'height']):
+            filtered_data['bbox'] = {
+                'x': filtered_data['x'],
+                'y': filtered_data['y'],
+                'width': filtered_data['width'],
+                'height': filtered_data['height']
+            }
+            
+            # Calcular área automaticamente
+            filtered_data['area'] = filtered_data['width'] * filtered_data['height']
         
         # Criar a anotação
         db_annotation = Annotation(**filtered_data)
