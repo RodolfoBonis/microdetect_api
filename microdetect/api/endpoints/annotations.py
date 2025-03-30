@@ -123,8 +123,15 @@ def update_annotation(
             return build_error_response("Anotação não encontrada", 404)
         
         # Remover campos que não são aceitos pelo schema de atualização
-        if 'id' in annotation_dict:
-            del annotation_dict['id']
+        fields_to_remove = ['id', 'x', 'y', 'width', 'height']
+        for field in fields_to_remove:
+            if field in annotation_dict:
+                del annotation_dict[field]
+        
+        # Extrair e guardar bounding_box separadamente, se existir
+        bounding_box = None
+        if 'bounding_box' in annotation_dict:
+            bounding_box = annotation_dict['bounding_box']
         
         # Criar instância de AnnotationUpdate a partir do dict recebido
         annotation = AnnotationUpdate(**annotation_dict)
@@ -142,19 +149,18 @@ def update_annotation(
                         dataset.classes = classes
                         db.commit()
         
-        # Extrair valores do bounding_box para os campos do modelo, se fornecido
+        # Atualizar os campos da anotação a partir do schema
         annotation_data = annotation.dict(exclude_unset=True)
-        if 'bounding_box' in annotation_data:
-            bbox = annotation_data.pop('bounding_box')
-            annotation_data['bbox'] = bbox
-            annotation_data['x'] = bbox.get('x')
-            annotation_data['y'] = bbox.get('y')
-            annotation_data['width'] = bbox.get('width')
-            annotation_data['height'] = bbox.get('height')
-        
-        # Atualizar os campos da anotação
         for key, value in annotation_data.items():
             setattr(db_annotation, key, value)
+        
+        # Atualizar separadamente os campos de bounding_box, se foi fornecido
+        if bounding_box:
+            db_annotation.bbox = bounding_box
+            db_annotation.x = bounding_box.get('x')
+            db_annotation.y = bounding_box.get('y')
+            db_annotation.width = bounding_box.get('width')
+            db_annotation.height = bounding_box.get('height')
         
         db.commit()
         db.refresh(db_annotation)
