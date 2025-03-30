@@ -46,7 +46,8 @@ class DatasetResponse(DatasetBase):
                 classes: Optional[List[str]] = None,
                 images_count: Optional[int] = 0,
                 annotations_count: Optional[int] = 0,
-                class_distribution: Optional[List[ClassDistribution]] = None):
+                class_distribution: Optional[List[ClassDistribution]] = None,
+                thumb: Optional[str] = ""):
         super().__init__(
             name=name,
             description=description,
@@ -58,6 +59,22 @@ class DatasetResponse(DatasetBase):
         self.images_count = images_count
         self.annotations_count = annotations_count
         self.class_distribution = class_distribution if class_distribution is not None else []
+        self.thumb = thumb
+    
+    def dict(self, exclude_unset: bool = False) -> Dict[str, Any]:
+        """Sobrescreve o método dict para garantir que todos os campos sejam incluídos"""
+        result = super().dict(exclude_unset)
+        # Adicionar campos que não são parte do BaseSchema
+        result.update({
+            "id": self.id,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+            "images_count": self.images_count,
+            "annotations_count": self.annotations_count,
+            "class_distribution": [d.dict() if hasattr(d, 'dict') else d for d in self.class_distribution],
+            "thumb": self.thumb
+        })
+        return result
     
     @classmethod
     def from_orm(cls, obj):
@@ -91,5 +108,6 @@ class DatasetResponse(DatasetBase):
             updated_at=obj.updated_at,
             images_count=getattr(obj, 'images_count', 0),
             annotations_count=getattr(obj, 'annotations_count', 0),
-            class_distribution=class_dist
+            class_distribution=class_dist,
+            thumb=getattr(obj, 'thumb', "")
         ) 

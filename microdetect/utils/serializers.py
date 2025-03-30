@@ -22,7 +22,10 @@ def serialize_to_json(obj: Any) -> str:
 
 def serialize_to_dict(obj: Any) -> Dict:
     """Converte qualquer objeto Python em um dicionário."""
-    if hasattr(obj, "__dict__"):
+    if hasattr(obj, "dict") and callable(getattr(obj, "dict")):
+        # Se o objeto tiver um método dict(), usar esse método
+        return obj.dict()
+    elif hasattr(obj, "__dict__"):
         return obj.__dict__
     elif isinstance(obj, list):
         return [serialize_to_dict(item) for item in obj]

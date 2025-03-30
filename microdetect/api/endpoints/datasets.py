@@ -50,9 +50,22 @@ def list_datasets(
     """
     datasets = DatasetService(db).get_multi(skip=skip, limit=limit)
     
-    # Para cada dataset, carregar a contagem de imagens
+    # Para cada dataset, carregar a contagem de imagens e anotações
     for dataset in datasets:
+        # Contagem de imagens
         dataset.images_count = db.query(func.count(Image.id)).filter(Image.dataset_id == dataset.id).scalar() or 0
+        
+        # Contagem de anotações
+        dataset.annotations_count = db.query(func.count(Annotation.id)) \
+            .join(Image, Annotation.image_id == Image.id) \
+            .filter(Image.dataset_id == dataset.id) \
+            .scalar() or 0
+        
+        # Buscar a primeira imagem do dataset para usar como thumb
+        first_image = db.query(Image).filter(Image.dataset_id == dataset.id).order_by(Image.id).first()
+        
+        # Adicionar atributo thumb com a URL da imagem ou string vazia
+        dataset.thumb = first_image.url if first_image else ""
     
     # Converter para esquema de resposta
     response_list = [DatasetResponse.from_orm(ds) for ds in datasets]
@@ -73,6 +86,18 @@ def get_dataset(
     
     # Carregar a contagem de imagens
     dataset.images_count = db.query(func.count(Image.id)).filter(Image.dataset_id == dataset.id).scalar() or 0
+    
+    # Carregar a contagem de anotações
+    dataset.annotations_count = db.query(func.count(Annotation.id)) \
+        .join(Image, Annotation.image_id == Image.id) \
+        .filter(Image.dataset_id == dataset.id) \
+        .scalar() or 0
+    
+    # Buscar a primeira imagem do dataset para usar como thumb
+    first_image = db.query(Image).filter(Image.dataset_id == dataset.id).order_by(Image.id).first()
+    
+    # Adicionar atributo thumb com a URL da imagem ou string vazia
+    dataset.thumb = first_image.url if first_image else ""
     
     # Converter para esquema de resposta
     response = DatasetResponse.from_orm(dataset)
@@ -100,6 +125,18 @@ def update_dataset(
     
     # Carregar a contagem de imagens
     dataset.images_count = db.query(func.count(Image.id)).filter(Image.dataset_id == dataset.id).scalar() or 0
+    
+    # Carregar a contagem de anotações
+    dataset.annotations_count = db.query(func.count(Annotation.id)) \
+        .join(Image, Annotation.image_id == Image.id) \
+        .filter(Image.dataset_id == dataset.id) \
+        .scalar() or 0
+    
+    # Buscar a primeira imagem do dataset para usar como thumb
+    first_image = db.query(Image).filter(Image.dataset_id == dataset.id).order_by(Image.id).first()
+    
+    # Adicionar atributo thumb com a URL da imagem ou string vazia
+    dataset.thumb = first_image.url if first_image else ""
     
     # Converter para esquema de resposta
     response = DatasetResponse.from_orm(dataset)
