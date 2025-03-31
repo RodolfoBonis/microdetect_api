@@ -31,4 +31,5 @@ class TrainingSession(Base):
     
     # Relacionamentos
     dataset = relationship("Dataset", back_populates="training_sessions")
-    model = relationship("Model", back_populates="training_session", uselist=False) 
+    model = relationship("Model", back_populates="training_session", uselist=False)
+    reports = relationship("TrainingReport", back_populates="training_session") 
