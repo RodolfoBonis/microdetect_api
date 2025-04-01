@@ -1,7 +1,10 @@
 from ultralytics import YOLO
 from typing import List, Dict, Any, Tuple
+from pathlib import Path
+
 from microdetect.core.config import settings
 from microdetect.models.model import Model
+from microdetect.services.dataset_service import DatasetService
 
 
 class YOLOService:
@@ -16,7 +19,8 @@ class YOLOService:
         model_type: str,
         model_version: str,
         hyperparameters: Dict[str, Any] = None,
-        callback: Any = None
+        callback: Any = None,
+        db_session = None
     ) -> Dict[str, Any]:
         """
         Treina um modelo YOLO.
@@ -27,10 +31,19 @@ class YOLOService:
             model_version: Versão do modelo
             hyperparameters: Parâmetros de treinamento
             callback: Função de callback para progresso
+            db_session: Sessão do banco de dados
             
         Returns:
             Métricas de treinamento
         """
+        # Garantir que o dataset esteja preparado para treinamento
+        if db_session:
+            dataset_service = DatasetService(db_session)
+            data_yaml_path = dataset_service.prepare_for_training(dataset_id)
+        else:
+            # Se não tiver sessão do banco, usar caminho padrão (mas pode não existir)
+            data_yaml_path = f"data/datasets/{dataset_id}/data.yaml"
+        
         # Configurar parâmetros padrão
         params = {
             "epochs": 100,
@@ -119,7 +132,7 @@ class YOLOService:
         
         # Treinar modelo
         results = model.train(
-            data=f"data/datasets/{dataset_id}/data.yaml",
+            data=data_yaml_path,
             **params
         )
         

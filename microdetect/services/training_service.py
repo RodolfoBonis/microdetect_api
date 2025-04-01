@@ -8,6 +8,10 @@ from microdetect.models.training_session import TrainingSession
 from microdetect.models.model import Model
 from microdetect.models.dataset import Dataset
 from microdetect.services.yolo_service import YOLOService
+from sqlalchemy.orm import Session
+from microdetect.core.logger import logger
+from microdetect.models.training_status import TrainingStatus
+import shutil
 
 class TrainingService:
     def __init__(self):
@@ -269,4 +273,85 @@ class TrainingService:
             format=format
         )
         
-        return export_path 
+        return export_path
+
+    async def train_model(self, session_id: int, db: Session) -> Dict[str, Any]:
+        """
+        Treina um modelo com base na sessão de treinamento.
+        
+        Args:
+            session_id: ID da sessão de treinamento
+            db: Sessão do banco de dados
+            
+        Returns:
+            Métricas de treinamento
+        """
+        # Obter sessão de treinamento
+        session = db.query(TrainingSession).filter(TrainingSession.id == session_id).first()
+        if not session:
+            raise ValueError(f"Session {session_id} not found")
+            
+        if session.status not in [TrainingStatus.PENDING, TrainingStatus.FAILED]:
+            logger.warning(f"Session {session_id} is already {session.status}")
+            return session.metrics or {}
+            
+        # Atualizar status
+        session.status = TrainingStatus.RUNNING
+        session.started_at = datetime.utcnow()
+        db.commit()
+        
+        try:
+            # Configurar diretório de saída
+            model_dir = settings.TRAINING_DIR / f"model_{session.id}"
+            model_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Configurar parâmetros de treinamento
+            hyperparameters = session.hyperparameters or {}
+            hyperparameters["project"] = str(model_dir.parent)
+            hyperparameters["name"] = model_dir.name
+            hyperparameters["exist_ok"] = True
+            
+            # Garantir que os parâmetros estejam no formato correto
+            if "batch_size" in hyperparameters:
+                hyperparameters["batch"] = hyperparameters.pop("batch_size")
+                
+            # Remover parâmetros que não são válidos para o YOLO
+            for param in ["model_type", "model_size"]:
+                if param in hyperparameters:
+                    hyperparameters.pop(param)
+                    
+            # Treinar modelo com progresso em tempo real
+            metrics = await self.yolo_service.train(
+                dataset_id=session.dataset_id,
+                model_type=session.model_type,
+                model_version=session.model_version,
+                hyperparameters=hyperparameters,
+                callback=lambda metrics: self.update_progress(session_id, metrics, db),
+                db_session=db  # Passar a sessão do banco de dados
+            )
+            
+            # Atualizar métricas e status
+            session.metrics = metrics
+            session.status = TrainingStatus.COMPLETED
+            session.completed_at = datetime.utcnow()
+            
+            # Copiar modelo para pasta de modelos
+            model_path = model_dir / "weights" / "best.pt"
+            if model_path.exists():
+                model_name = f"{session.model_type}{session.model_version}"
+                model_filename = f"{model_name}_{session.id}.pt"
+                target_path = settings.MODELS_DIR / model_filename
+                shutil.copy(model_path, target_path)
+                
+                # Atualizar o caminho do modelo na sessão
+                session.model_path = str(target_path)
+            
+        except Exception as e:
+            logger.error(f"Error in training session {session_id}: {e}")
+            session.status = TrainingStatus.FAILED
+            session.completed_at = datetime.utcnow()
+        finally:
+            # Salvar alterações
+            db.commit()
+            
+        return session.metrics or {} 

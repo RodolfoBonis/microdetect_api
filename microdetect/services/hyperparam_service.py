@@ -286,10 +286,21 @@ class HyperparamService:
             model_type=model_type,
             model_version=model_size,
             hyperparameters=train_params,
-            callback=None  # Não precisamos de callback para iterações de busca
+            callback=None,  # Não precisamos de callback para iterações de busca
+            db_session=self._get_db_session()  # Passar a sessão do banco de dados
         )
         
         return metrics
+    
+    def _get_db_session(self):
+        """
+        Obtém uma sessão do banco de dados.
+        
+        Returns:
+            Sessão do banco de dados
+        """
+        from microdetect.database.database import SessionLocal
+        return SessionLocal()
     
     async def _create_final_model(
         self,
@@ -362,7 +373,8 @@ class HyperparamService:
                 model_type=model_type,
                 model_version=model_size,
                 hyperparameters=params,
-                callback=None  # Não precisamos de callback para o modelo final
+                callback=None,  # Não precisamos de callback para o modelo final
+                db_session=db  # Passar a sessão do banco de dados
             )
             
             # Atualizar métricas e status
