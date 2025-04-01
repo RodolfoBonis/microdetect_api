@@ -57,7 +57,11 @@ class HyperparamSearchResponse(HyperparamSearchBase):
                 updated_at: datetime = None,
                 started_at: Optional[datetime] = None,
                 completed_at: Optional[datetime] = None,
-                training_session_id: Optional[int] = None):
+                training_session_id: Optional[int] = None,
+                current_iteration: Optional[int] = None,
+                iterations_completed: Optional[int] = None,
+                current_params: Optional[Dict[str, Any]] = None,
+                progress: Optional[Dict[str, Any]] = None):
         super().__init__(
             name=name,
             dataset_id=dataset_id,
@@ -75,6 +79,11 @@ class HyperparamSearchResponse(HyperparamSearchBase):
         self.started_at = started_at
         self.completed_at = completed_at
         self.training_session_id = training_session_id
+        
+        self.current_iteration = current_iteration
+        self.iterations_completed = iterations_completed
+        self.current_params = current_params or {}
+        self.progress = progress or {}
     
     @classmethod
     def from_orm(cls, obj):
@@ -94,7 +103,11 @@ class HyperparamSearchResponse(HyperparamSearchBase):
             updated_at=obj.updated_at,
             started_at=getattr(obj, 'started_at', None),
             completed_at=getattr(obj, 'completed_at', None),
-            training_session_id=getattr(obj, 'training_session_id', None)
+            training_session_id=getattr(obj, 'training_session_id', None),
+            current_iteration=None,
+            iterations_completed=None,
+            current_params=None,
+            progress=None
         )
 
 class HyperparamTrialCreate(BaseSchema):

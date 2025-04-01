@@ -1,11 +1,20 @@
+import os
+import logging
+import torch
 from ultralytics import YOLO
 from typing import List, Dict, Any, Tuple
 from pathlib import Path
 
 from microdetect.core.config import settings
+from microdetect.models import Dataset
 from microdetect.models.model import Model
 from microdetect.services.dataset_service import DatasetService
+from microdetect.database.database import get_db
 
+# Verificar se CUDA está disponível
+CUDA_AVAILABLE = torch.cuda.is_available()
+logger = logging.getLogger(__name__)
+logger.info(f"CUDA available in YOLOService: {CUDA_AVAILABLE}")
 
 class YOLOService:
     def __init__(self):
@@ -20,7 +29,8 @@ class YOLOService:
         model_version: str,
         hyperparameters: Dict[str, Any] = None,
         callback: Any = None,
-        db_session = None
+        db_session = None,
+        data_yaml_path: str = None
     ) -> Dict[str, Any]:
         """
         Treina um modelo YOLO.
@@ -32,123 +42,205 @@ class YOLOService:
             hyperparameters: Parâmetros de treinamento
             callback: Função de callback para progresso
             db_session: Sessão do banco de dados
+            data_yaml_path: Caminho para o arquivo data.yaml (opcional)
             
         Returns:
             Métricas de treinamento
         """
-        # Garantir que o dataset esteja preparado para treinamento
-        if db_session:
-            dataset_service = DatasetService(db_session)
-            data_yaml_path = dataset_service.prepare_for_training(dataset_id)
-        else:
-            # Se não tiver sessão do banco, usar caminho padrão (mas pode não existir)
-            data_yaml_path = f"data/datasets/{dataset_id}/data.yaml"
-        
-        # Configurar parâmetros padrão
-        params = {
-            "epochs": 100,
-            "batch": 16,  # YOLO usa 'batch', não 'batch_size'
-            "imgsz": 640,
-            "device": "auto",
-            "workers": 8,
-            "project": str(self.models_dir),
-            "name": f"dataset_{dataset_id}",
-            "exist_ok": True,
-            "pretrained": True,
-            "optimizer": "auto",
-            "verbose": True,
-            "seed": 0,
-            "deterministic": True,
-            "single_cls": False,
-            "rect": False,
-            "cos_lr": False,
-            "close_mosaic": 0,
-            "resume": False,
-            "amp": True,
-            "fraction": 1.0,
-            "cache": False,
-            "overlap_mask": True,
-            "mask_ratio": 4,
-            "dropout": 0.0,
-            "val": True,
-            "save": True,
-            "save_json": False,
-            "save_hybrid": False,
-            "conf": 0.001,
-            "iou": 0.6,
-            "max_det": 300,
-            "half": False,
-            "dnn": False,
-            "plots": True,
-        }
-        
-        # Atualizar com parâmetros fornecidos
-        if hyperparameters:
-            # Verificar e converter parâmetros incompatíveis
-            if "batch_size" in hyperparameters:
-                hyperparameters["batch"] = hyperparameters.pop("batch_size")
-                
-            # Remover parâmetros inválidos para evitar erros
-            invalid_params = ["model_type", "model_size"]
-            for param in invalid_params:
-                if param in hyperparameters:
-                    hyperparameters.pop(param)
-                    
-            # Atualizar com os parâmetros corrigidos
-            params.update(hyperparameters)
-        
-        # Carregar modelo base
-        model = YOLO(f"{model_type}{model_version}.pt")
-        
-        # Definir uma função para monitorar o progresso, se callback for fornecido
-        if callback:
-            # Configurar um callback para o YOLO
-            class ProgressCallback:
-                def __init__(self):
-                    self.current_epoch = 0
-                    self.total_epochs = params["epochs"]
-                
-                def on_train_epoch_end(self, trainer):
-                    # Extrair métricas da época atual
-                    current_metrics = {
-                        "epoch": trainer.epoch,
-                        "total_epochs": trainer.epochs,
-                        "loss": float(trainer.loss.detach().cpu().numpy() if hasattr(trainer, 'loss') else 0.0),
-                        "map50": float(trainer.metrics.get("metrics/mAP50(B)", 0.0)),
-                        "map": float(trainer.metrics.get("metrics/mAP50-95(B)", 0.0)),
-                        "precision": float(trainer.metrics.get("metrics/precision(B)", 0.0)),
-                        "recall": float(trainer.metrics.get("metrics/recall(B)", 0.0)),
-                        "val_loss": float(trainer.metrics.get("val/box_loss", 0.0)),
-                        "eta_seconds": trainer.epoch_time.avg * (trainer.epochs - trainer.epoch)
-                    }
-                    
-                    # Chamar o callback com as métricas
-                    if callback:
-                        callback(current_metrics)
+        try:
+            # Garantir que os parâmetros são um dicionário válido
+            hyperparameters = hyperparameters or {}
             
-            # Registrar o callback
-            progress_callback = ProgressCallback()
-            model.add_callback("on_train_epoch_end", progress_callback.on_train_epoch_end)
-        
-        # Treinar modelo
-        results = model.train(
-            data=data_yaml_path,
-            **params
-        )
-        
-        # Extrair métricas
-        metrics = {
-            "epochs": results.results_dict["epochs"],
-            "best_epoch": results.results_dict["best_epoch"],
-            "best_map50": results.results_dict["best_map50"],
-            "best_map": results.results_dict["best_map"],
-            "final_map50": results.results_dict["final_map50"],
-            "final_map": results.results_dict["final_map"],
-            "train_time": results.results_dict["train_time"],
-            "val_time": results.results_dict["val_time"],
-        }
-        
-        return metrics
+            # Verificar e ajustar o dispositivo, se necessário
+            if "device" in hyperparameters and hyperparameters["device"] == "auto" and not CUDA_AVAILABLE:
+                hyperparameters["device"] = "cpu"
+                logger.info("CUDA não disponível. Forçando device=cpu para treinamento.")
+            elif "device" not in hyperparameters and not CUDA_AVAILABLE:
+                hyperparameters["device"] = "cpu"
+                logger.info("CUDA não disponível. Adicionando device=cpu para treinamento.")
+            
+            # Se o caminho do data.yaml foi fornecido, usar diretamente
+            if data_yaml_path:
+                logger.info(f"Usando arquivo data.yaml fornecido: {data_yaml_path}")
+                # Verificar se o arquivo existe
+                if not os.path.exists(data_yaml_path):
+                    logger.error(f"Arquivo data.yaml fornecido não encontrado: {data_yaml_path}")
+                    raise FileNotFoundError(f"Arquivo data.yaml fornecido não encontrado: {data_yaml_path}")
+            else:
+                # Garantir que o dataset esteja preparado para treinamento e obter o caminho correto do data.yaml
+                if db_session:
+                    dataset_service = DatasetService(db_session)
+                    # Obter o nome do dataset para construir o caminho correto
+                    dataset = db_session.query(Dataset).filter(Dataset.id == dataset_id).first()
+                    if not dataset:
+                        raise ValueError(f"Dataset {dataset_id} não encontrado")
+                    
+                    # Preparar o dataset e obter o caminho correto do data.yaml
+                    data_yaml_path = dataset_service.prepare_for_training(dataset_id)
+                    
+                    # Verificar se o arquivo existe
+                    if not os.path.exists(data_yaml_path):
+                        logger.error(f"Arquivo data.yaml não encontrado em: {data_yaml_path}")
+                        raise FileNotFoundError(f"Arquivo data.yaml não encontrado: {data_yaml_path}")
+                    
+                    logger.info(f"Usando arquivo data.yaml em: {data_yaml_path}")
+                else:
+                    # Se não tiver sessão do banco, usar o caminho correto com base no nome do dataset
+                    # Isso requer que tenhamos o nome do dataset, então vamos tentar obtê-lo
+                    try:
+                        # Criar temporariamente uma sessão do banco para obter o nome do dataset
+                        temp_db = next(get_db())
+                        dataset = temp_db.query(Dataset).filter(Dataset.id == dataset_id).first()
+                        if dataset:
+                            # Construir o caminho correto
+                            data_yaml_path = str(settings.TRAINING_DIR / dataset.name / "data.yaml")
+                            temp_db.close()
+                        else:
+                            raise ValueError(f"Dataset {dataset_id} não encontrado")
+                    except Exception as e:
+                        logger.error(f"Erro ao obter o nome do dataset: {str(e)}")
+                        # Fallback para o caminho padrão antigo, que provavelmente não existirá
+                        data_yaml_path = f"data/datasets/{dataset_id}/data.yaml"
+            
+            # Registrar o caminho do data.yaml
+            logger.info(f"Usando arquivo data.yaml: {data_yaml_path}")
+            
+            # Verificar se o arquivo existe
+            if not os.path.exists(data_yaml_path):
+                logger.error(f"Arquivo data.yaml não encontrado em: {data_yaml_path}")
+                raise FileNotFoundError(f"Arquivo data.yaml não encontrado: {data_yaml_path}")
+                
+            # Configurar parâmetros padrão
+            params = {
+                "epochs": 100,
+                "batch": 16,  # YOLO usa 'batch', não 'batch_size'
+                "imgsz": 640,
+                "device": "auto",
+                "workers": 8,
+                "project": str(self.models_dir),
+                "name": f"dataset_{dataset_id}",
+                "exist_ok": True,
+                "pretrained": True,
+                "optimizer": "auto",
+                "verbose": True,
+                "seed": 0,
+                "deterministic": True,
+                "single_cls": False,
+                "rect": False,
+                "cos_lr": False,
+                "close_mosaic": 0,
+                "resume": False,
+                "amp": True,
+                "fraction": 1.0,
+                "cache": False,
+                "overlap_mask": True,
+                "mask_ratio": 4,
+                "dropout": 0.0,
+                "val": True,
+                "save": True,
+                "save_json": False,
+                "save_hybrid": False,
+                "conf": 0.001,
+                "iou": 0.6,
+                "max_det": 300,
+                "half": False,
+                "dnn": False,
+                "plots": True,
+            }
+            
+            # Registrar o tipo do modelo e hiperparâmetros recebidos para debug
+            print(f"Treinando modelo {model_type}{model_version} com hiperparâmetros: {hyperparameters}")
+            
+            # Atualizar com parâmetros fornecidos
+            if hyperparameters:
+                # Verificar e converter parâmetros incompatíveis
+                if "batch_size" in hyperparameters:
+                    hyperparameters["batch"] = hyperparameters.pop("batch_size")
+                    
+                # Verificar o parâmetro epochs explicitamente
+                if "epochs" in hyperparameters:
+                    try:
+                        # Garantir que epochs seja um inteiro
+                        epochs_value = int(hyperparameters["epochs"])
+                        hyperparameters["epochs"] = epochs_value
+                    except (ValueError, TypeError) as e:
+                        print(f"Erro ao converter 'epochs' para inteiro: {str(e)}")
+                        # Usar valor padrão se falhar
+                        hyperparameters.pop("epochs", None)
+                    
+                # Remover parâmetros inválidos para evitar erros
+                invalid_params = ["model_type", "model_size", "model_version"]
+                for param in invalid_params:
+                    if param in hyperparameters:
+                        hyperparameters.pop(param)
+                        
+                # Atualizar com os parâmetros corrigidos
+                params.update(hyperparameters)
+            
+            # Carregar modelo base
+            try:
+                model = YOLO(f"{model_type}{model_version}.pt")
+            except Exception as e:
+                print(f"Erro ao carregar modelo base: {str(e)}")
+                raise
+            
+            # Definir uma função para monitorar o progresso, se callback for fornecido
+            if callback:
+                # Configurar um callback para o YOLO
+                class ProgressCallback:
+                    def __init__(self):
+                        self.current_epoch = 0
+                        self.total_epochs = params["epochs"]
+                    
+                    def on_train_epoch_end(self, trainer):
+                        # Extrair métricas da época atual
+                        current_metrics = {
+                            "epoch": trainer.epoch,
+                            "total_epochs": trainer.epochs,
+                            "loss": float(trainer.loss.detach().cpu().numpy() if hasattr(trainer, 'loss') else 0.0),
+                            "map50": float(trainer.metrics.get("metrics/mAP50(B)", 0.0)),
+                            "map": float(trainer.metrics.get("metrics/mAP50-95(B)", 0.0)),
+                            "precision": float(trainer.metrics.get("metrics/precision(B)", 0.0)),
+                            "recall": float(trainer.metrics.get("metrics/recall(B)", 0.0)),
+                            "val_loss": float(trainer.metrics.get("val/box_loss", 0.0)),
+                            "eta_seconds": trainer.epoch_time.avg * (trainer.epochs - trainer.epoch)
+                        }
+                        
+                        # Chamar o callback com as métricas
+                        if callback:
+                            callback(current_metrics)
+                
+                # Registrar o callback
+                progress_callback = ProgressCallback()
+                model.add_callback("on_train_epoch_end", progress_callback.on_train_epoch_end)
+            
+            # Registrar os parâmetros finais para debug
+            print(f"Parâmetros finais de treinamento: {params}")
+            
+            # Treinar modelo
+            results = model.train(
+                data=data_yaml_path,
+                **params
+            )
+            
+            # Extrair métricas
+            metrics = {
+                "epochs": results.results_dict["epochs"],
+                "best_epoch": results.results_dict["best_epoch"],
+                "best_map50": results.results_dict["best_map50"],
+                "best_map": results.results_dict["best_map"],
+                "final_map50": results.results_dict["final_map50"],
+                "final_map": results.results_dict["final_map"],
+                "train_time": results.results_dict["train_time"],
+                "val_time": results.results_dict["val_time"],
+            }
+            
+            return metrics
+            
+        except Exception as e:
+            print(f"Erro durante treinamento: {str(e)}")
+            # Repassar a exceção após o log
+            raise
 
     async def predict(
         self,
@@ -226,9 +318,39 @@ class YOLOService:
             
             self._model_cache[model_id] = YOLO(model.filepath)
         
+        # Obter o caminho correto do data.yaml
+        try:
+            # Criar temporariamente uma sessão do banco para obter o nome do dataset
+            temp_db = next(get_db())
+            dataset = temp_db.query(Dataset).filter(Dataset.id == dataset_id).first()
+            if dataset:
+                # Construir o caminho correto
+                data_yaml_path = str(settings.TRAINING_DIR / dataset.name / "data.yaml")
+                # Opcionalmente preparar o dataset, se necessário
+                dataset_service = DatasetService(temp_db)
+                dataset_service.prepare_for_training(dataset_id)
+            else:
+                raise ValueError(f"Dataset {dataset_id} não encontrado")
+            
+            # Verificar se o arquivo existe
+            if not os.path.exists(data_yaml_path):
+                logger.error(f"Arquivo data.yaml não encontrado em: {data_yaml_path}")
+                raise FileNotFoundError(f"Arquivo data.yaml não encontrado: {data_yaml_path}")
+                
+            logger.info(f"Usando arquivo data.yaml para validação: {data_yaml_path}")
+            
+        except Exception as e:
+            logger.error(f"Erro ao obter o caminho do data.yaml: {str(e)}")
+            # Fallback para o caminho padrão antigo
+            data_yaml_path = f"data/datasets/{dataset_id}/data.yaml"
+        finally:
+            # Fechar a sessão temporária
+            if 'temp_db' in locals():
+                temp_db.close()
+        
         # Validar modelo
         results = self._model_cache[model_id].val(
-            data=f"data/datasets/{dataset_id}/data.yaml",
+            data=data_yaml_path,
             verbose=True
         )
         

@@ -4,6 +4,7 @@ from typing import List, Dict, Any, Optional
 import asyncio
 import json
 from datetime import datetime
+import logging
 
 from microdetect.database.database import get_db
 from microdetect.models.hyperparam_search import HyperparamSearch, HyperparamSearchStatus
@@ -17,6 +18,7 @@ from microdetect.utils.serializers import build_response, build_error_response
 
 router = APIRouter()
 hyperparam_service = HyperparamService()
+logger = logging.getLogger(__name__)
 
 @router.post("/", response_model=None)
 async def create_hyperparam_search(
@@ -29,7 +31,7 @@ async def create_hyperparam_search(
         # Criar busca no banco
         search = await hyperparam_service.create_search(search_data, db)
         
-        # Iniciar busca em background
+        # Iniciar busca em background usando o novo método que utiliza ProcessPoolExecutor
         background_tasks.add_task(
             hyperparam_service.start_search,
             search.id,
@@ -106,31 +108,81 @@ async def websocket_endpoint(
             await websocket.close()
             return
         
+        # Obter dados de progresso em tempo real
+        progress_data = hyperparam_service.get_progress(search_id)
+        
         # Enviar estado inicial
         response = HyperparamSearchResponse.from_orm(search)
-        await websocket.send_json(response.dict())
+        initial_data = response.dict()
+        
+        # Adaptar os dados para o frontend
+        initial_data.update({
+            # Campos esperados pelo frontend
+            "trials_data": progress_data.get("trials", []),
+            "current_iteration": progress_data.get("current_iteration", 0),
+            "iterations_completed": progress_data.get("iterations_completed", 0),
+            # Também incluir dados de progresso raw para debug
+            "progress": progress_data,
+        })
+        
+        await websocket.send_json(initial_data)
         
         # Monitorar atualizações
+        last_update = None
         while True:
-            # Atualizar dados da busca
-            db.refresh(search)
-            response = HyperparamSearchResponse.from_orm(search)
+            # Obter dados de progresso atualizados
+            progress_data = hyperparam_service.get_progress(search_id)
             
-            # Enviar atualização
-            await websocket.send_json(response.dict())
-            
-            # Verificar se a busca terminou
-            if search.status in [HyperparamSearchStatus.COMPLETED, HyperparamSearchStatus.FAILED]:
+            # Se os dados são diferentes da última atualização, enviar
+            if last_update != progress_data:
+                last_update = progress_data.copy()
+                
+                # Atualizar busca para ter os dados mais recentes
+                db.refresh(search)
+                response = HyperparamSearchResponse.from_orm(search)
+                update_data = response.dict()
+                
+                # Adaptar os dados para o frontend
+                update_data.update({
+                    # Campos esperados pelo frontend
+                    "trials_data": progress_data.get("trials", []),
+                    "current_iteration": progress_data.get("current_iteration", 0),
+                    "iterations_completed": progress_data.get("iterations_completed", 0),
+                    # Campos para compatibilidade
+                    "best_params": progress_data.get("best_params", {}),
+                    "best_metrics": progress_data.get("best_metrics", {}),
+                    # Incluir dados de progresso raw para debug
+                    "progress": progress_data,
+                })
+                
+                # Enviar atualização
+                await websocket.send_json(update_data)
+                
+            # Verificar se a busca terminou baseado nos dados de progresso
+            if progress_data.get("status") in ["completed", "failed"]:
+                # Enviar uma atualização final
+                db.refresh(search)
+                response = HyperparamSearchResponse.from_orm(search)
+                final_data = response.dict()
+                final_data.update({
+                    "trials_data": progress_data.get("trials", []),
+                    "best_params": progress_data.get("best_params", {}),
+                    "best_metrics": progress_data.get("best_metrics", {}),
+                    "status": progress_data.get("status", search.status),
+                    "progress": progress_data
+                })
+                await websocket.send_json(final_data)
                 break
             
             # Aguardar próxima atualização
-            await asyncio.sleep(2)
+            await asyncio.sleep(1)
             
     except WebSocketDisconnect:
         # Cliente desconectou
         pass
     except Exception as e:
         # Erro durante monitoramento
+        logger.error(f"Erro no websocket: {str(e)}")
         try:
             await websocket.send_json({"error": str(e)})
         except:

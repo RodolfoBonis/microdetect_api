@@ -14,6 +14,7 @@ from microdetect.schemas.hyperparam_search import TrainingProgress, TrainingMetr
 from microdetect.services.yolo_service import YOLOService
 from microdetect.services.resource_monitor import ResourceMonitor
 from microdetect.utils.serializers import build_response, build_error_response
+from microdetect.services.training_service import TrainingService
 
 router = APIRouter()
 yolo_service = YOLOService()
@@ -29,25 +30,31 @@ async def create_training_session(
     db: Session = Depends(get_db)
 ):
     """Cria uma nova sessão de treinamento."""
-    # Criar instância de TrainingSessionCreate a partir do dict recebido
-    training_create = TrainingSessionCreate(**training)
-    
-    # Criar registro no banco
-    db_training = TrainingSession(**training_create.dict())
-    db.add(db_training)
-    db.commit()
-    db.refresh(db_training)
-    
-    # Iniciar treinamento em background
-    background_tasks.add_task(
-        train_model,
-        db_training.id,
-        db
-    )
-    
-    # Converter para esquema de resposta
-    response = TrainingSessionResponse.from_orm(db_training)
-    return build_response(response)
+    try:
+        # Instanciar serviço
+        training_service = TrainingService()
+        
+        # Criar sessão de treinamento
+        db_training = await training_service.create_training_session(
+            dataset_id=training.get("dataset_id"),
+            model_type=training.get("model_type", "yolov8"),
+            model_version=training.get("model_version", "n"),
+            name=training.get("name"),
+            description=training.get("description"),
+            hyperparameters=training.get("hyperparameters", {})
+        )
+        
+        # Iniciar treinamento em background
+        background_tasks.add_task(
+            training_service.start_training,
+            db_training.id
+        )
+        
+        # Converter para esquema de resposta
+        response = TrainingSessionResponse.from_orm(db_training)
+        return build_response(response)
+    except Exception as e:
+        return build_error_response(f"Erro ao criar sessão de treinamento: {str(e)}", 400)
 
 @router.get("/", response_model=None)
 def list_training_sessions(
@@ -136,6 +143,9 @@ async def websocket_endpoint(
     await websocket.accept()
     
     try:
+        # Criar instância do serviço de treinamento
+        training_service = TrainingService()
+        
         # Verificar se a sessão existe
         session = db.query(TrainingSession).filter(TrainingSession.id == session_id).first()
         if not session:
@@ -143,30 +153,64 @@ async def websocket_endpoint(
             await websocket.close()
             return
         
+        # Obter dados de progresso em tempo real
+        progress_data = training_service.get_progress(session_id)
+        
         # Enviar estado inicial
         response = TrainingSessionResponse.from_orm(session)
-        await websocket.send_json(response.dict())
+        initial_data = response.dict()
+        
+        # Adicionar dados de progresso
+        initial_data.update({
+            "current_epoch": progress_data.get("current_epoch", 0),
+            "total_epochs": progress_data.get("total_epochs", session.hyperparameters.get("epochs", 100)),
+            "metrics": progress_data.get("metrics", {}),
+            "resources": progress_data.get("resources", {}),
+            "progress": progress_data  # Dados brutos para debug
+        })
+        
+        await websocket.send_json(initial_data)
         
         # Monitorar progresso
+        last_update = None
         while True:
-            # Atualizar dados da sessão
-            db.refresh(session)
+            # Obter dados de progresso atualizados
+            progress_data = training_service.get_progress(session_id)
             
-            # Enviar progresso em tempo real se disponível
-            if str(session_id) in training_progress:
-                await websocket.send_json(training_progress[str(session_id)].dict())
-            else:
-                # Senão, enviar dados da sessão
+            # Se os dados são diferentes da última atualização, enviar
+            if last_update != progress_data:
+                last_update = progress_data.copy()
+                
+                # Atualizar dados da sessão
+                db.refresh(session)
+                
+                # Criar resposta atualizada
                 response = TrainingSessionResponse.from_orm(session)
-                await websocket.send_json(response.dict())
-            
-            # Verificar se o treinamento terminou
-            if session.status in [TrainingStatus.COMPLETED, TrainingStatus.FAILED]:
+                update_data = response.dict()
+                
+                # Adicionar dados de progresso
+                update_data.update({
+                    "current_epoch": progress_data.get("current_epoch", 0),
+                    "total_epochs": progress_data.get("total_epochs", session.hyperparameters.get("epochs", 100)),
+                    "metrics": progress_data.get("metrics", {}),
+                    "resources": progress_data.get("resources", {}),
+                    "progress": progress_data  # Dados brutos para debug
+                })
+                
+                # Enviar atualização
+                await websocket.send_json(update_data)
+                
+            # Verificar se o treinamento terminou baseado nos dados de progresso
+            if progress_data.get("status") in ["completed", "failed"] or session.status in [TrainingStatus.COMPLETED, TrainingStatus.FAILED]:
                 # Enviar relatório final se existir
                 report = db.query(TrainingReport).filter(TrainingReport.training_session_id == session_id).first()
                 if report:
                     response = TrainingReportResponse.from_orm(report)
-                    await websocket.send_json({"type": "final_report", "data": response.dict()})
+                    await websocket.send_json({
+                        "type": "final_report",
+                        "data": response.dict(),
+                        "status": session.status
+                    })
                 break
             
             # Aguardar próxima atualização
@@ -177,6 +221,9 @@ async def websocket_endpoint(
         pass
     except Exception as e:
         # Erro durante monitoramento
+        import traceback
+        error_details = traceback.format_exc()
+        print(f"Erro no websocket: {str(e)}\n{error_details}")
         try:
             await websocket.send_json({"error": str(e)})
         except:
