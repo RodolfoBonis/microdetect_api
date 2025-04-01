@@ -2,4 +2,4 @@
 MicroDetect - Backend Python para detecção de microorganismos
 """
 
-__version__ = '1.4.55'  # Manter sincronizado com setup.py
+__version__ = '1.4.56'  # Manter sincronizado com setup.py

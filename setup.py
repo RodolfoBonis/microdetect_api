@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="microdetect",
-    version="1.4.55",
+    version="1.4.56",
     packages=find_packages(),
     include_package_data=True,
     install_requires=[
