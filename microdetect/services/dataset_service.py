@@ -1,14 +1,14 @@
-from typing import List, Optional
-from sqlalchemy.orm import Session
-import os
-import yaml
 import shutil
 from pathlib import Path
+from typing import List, Optional
 
-from microdetect.models.dataset import Dataset
+import yaml
+from sqlalchemy.orm import Session
+
+from microdetect.core.config import Settings
 from microdetect.models.annotation import Annotation
+from microdetect.models.dataset import Dataset
 from microdetect.schemas.dataset import DatasetCreate, DatasetUpdate
-from microdetect.core.config import settings
 
 
 class DatasetService:
@@ -77,7 +77,7 @@ class DatasetService:
             raise ValueError(f"Dataset {dataset_id} não encontrado")
         
         # Diretório base para o dataset
-        dataset_dir = Path(f"data/datasets/{dataset_id}")
+        dataset_dir = Path(f"{Settings.TRAINING_DIR}/{dataset.name}")
         dataset_dir.mkdir(parents=True, exist_ok=True)
         
         # Criar subdiretórios
