@@ -43,10 +43,19 @@ final searchData = {
     'epochs': 10,  // Reduzir épocas para busca mais rápida
     'optimizer': ['Adam', 'SGD'],
     'lr0': {'min': 0.001, 'max': 0.01},
+    'device': 'auto',  // Especifique 'auto', 'cpu', '0' (primeira GPU) ou outro dispositivo aqui
   },
   'iterations': 5,  // Número de modelos a serem testados
   'description': 'Busca automática para encontrar melhores hiperparâmetros'
 };
+
+> **Nota sobre o parâmetro `device`**: Ao especificar `device` no `search_space`, ele será aplicado a todas as iterações 
+> da busca, não sendo considerado como um hiperparâmetro a ser otimizado, mas sim como uma configuração fixa. 
+> Valores possíveis são:
+> - `'auto'`: Seleciona automaticamente GPU se disponível, ou CPU
+> - `'cpu'`: Força o uso da CPU
+> - `'0'`: Utiliza a primeira GPU (índice 0)
+> - `'1'`, `'2'`, etc.: Utiliza a GPU específica pelo índice
 ```
 
 ### 2.2. Monitorar Progresso da Busca via WebSocket

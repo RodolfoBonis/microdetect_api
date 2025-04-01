@@ -153,9 +153,21 @@ class HyperparamService:
         training_dir = settings.TRAINING_DIR / f"hyperparam_search_{search_id}"
         training_dir.mkdir(parents=True, exist_ok=True)
         
+        # Verificar se foi especificado um dispositivo para a busca
+        device = search.search_space.get("device", "auto")
+        
+        # Se device foi especificado no search_space, remover para não interferir na busca
+        if "device" in search.search_space:
+            logger.info(f"Using device '{device}' for all iterations")
+            # Fazemos uma cópia para não modificar o objeto original no banco
+            search_space = search.search_space.copy()
+            search_space.pop("device", None)
+        else:
+            search_space = search.search_space
+        
         # Iniciar otimizador
         optimizer = HyperparameterOptimizer(
-            search_space=search.search_space,
+            search_space=search_space,
             iterations=search.iterations
         )
         
@@ -166,6 +178,10 @@ class HyperparamService:
                 
                 # Gerar parâmetros para esta iteração
                 params = optimizer.generate_params()
+                
+                # Adicionar o dispositivo a ser usado
+                params["device"] = device
+                
                 logger.info(f"Generated params: {params}")
                 
                 # Criar diretório para esta iteração
@@ -195,10 +211,16 @@ class HyperparamService:
             
             # Criar modelo final com os melhores parâmetros
             logger.info(f"Training final model with best params for search {search_id}")
+            
+            # Garantir que o dispositivo seja preservado nos melhores parâmetros
+            best_params = optimizer.get_best_params()
+            if "device" not in best_params:
+                best_params["device"] = device
+                
             final_training_session = await self._create_final_model(
                 search_id=search_id,
                 dataset_id=search.dataset_id,
-                best_params=search.best_params,
+                best_params=best_params,
                 db=db
             )
             
