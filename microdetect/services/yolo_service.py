@@ -15,7 +15,8 @@ class YOLOService:
         dataset_id: int,
         model_type: str,
         model_version: str,
-        hyperparameters: Dict[str, Any] = None
+        hyperparameters: Dict[str, Any] = None,
+        callback: Any = None
     ) -> Dict[str, Any]:
         """
         Treina um modelo YOLO.
@@ -25,6 +26,7 @@ class YOLOService:
             model_type: Tipo do modelo (ex: "yolov8")
             model_version: Versão do modelo
             hyperparameters: Parâmetros de treinamento
+            callback: Função de callback para progresso
             
         Returns:
             Métricas de treinamento
@@ -32,7 +34,7 @@ class YOLOService:
         # Configurar parâmetros padrão
         params = {
             "epochs": 100,
-            "batch_size": 16,
+            "batch": 16,  # YOLO usa 'batch', não 'batch_size'
             "imgsz": 640,
             "device": "auto",
             "workers": 8,
@@ -69,10 +71,51 @@ class YOLOService:
         
         # Atualizar com parâmetros fornecidos
         if hyperparameters:
+            # Verificar e converter parâmetros incompatíveis
+            if "batch_size" in hyperparameters:
+                hyperparameters["batch"] = hyperparameters.pop("batch_size")
+                
+            # Remover parâmetros inválidos para evitar erros
+            invalid_params = ["model_type", "model_size"]
+            for param in invalid_params:
+                if param in hyperparameters:
+                    hyperparameters.pop(param)
+                    
+            # Atualizar com os parâmetros corrigidos
             params.update(hyperparameters)
         
         # Carregar modelo base
         model = YOLO(f"{model_type}{model_version}.pt")
+        
+        # Definir uma função para monitorar o progresso, se callback for fornecido
+        if callback:
+            # Configurar um callback para o YOLO
+            class ProgressCallback:
+                def __init__(self):
+                    self.current_epoch = 0
+                    self.total_epochs = params["epochs"]
+                
+                def on_train_epoch_end(self, trainer):
+                    # Extrair métricas da época atual
+                    current_metrics = {
+                        "epoch": trainer.epoch,
+                        "total_epochs": trainer.epochs,
+                        "loss": float(trainer.loss.detach().cpu().numpy() if hasattr(trainer, 'loss') else 0.0),
+                        "map50": float(trainer.metrics.get("metrics/mAP50(B)", 0.0)),
+                        "map": float(trainer.metrics.get("metrics/mAP50-95(B)", 0.0)),
+                        "precision": float(trainer.metrics.get("metrics/precision(B)", 0.0)),
+                        "recall": float(trainer.metrics.get("metrics/recall(B)", 0.0)),
+                        "val_loss": float(trainer.metrics.get("val/box_loss", 0.0)),
+                        "eta_seconds": trainer.epoch_time.avg * (trainer.epochs - trainer.epoch)
+                    }
+                    
+                    # Chamar o callback com as métricas
+                    if callback:
+                        callback(current_metrics)
+            
+            # Registrar o callback
+            progress_callback = ProgressCallback()
+            model.add_callback("on_train_epoch_end", progress_callback.on_train_epoch_end)
         
         # Treinar modelo
         results = model.train(

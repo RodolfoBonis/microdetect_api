@@ -234,10 +234,14 @@ class HyperparamService:
         Returns:
             Métricas de treinamento
         """
-        # Configurar parâmetros de treinamento
+        # Extrair model_type e model_size antes de configurar os parâmetros
+        model_type = params.pop("model_type", "yolov8")
+        model_size = params.pop("model_size", "n")
+        
+        # Configurar parâmetros de treinamento com nomes corretos para YOLO
         train_params = {
             "epochs": params.get("epochs", 10),  # Reduzir épocas para busca mais rápida
-            "batch_size": params.get("batch_size", 16),
+            "batch": params.get("batch_size", 16),  # YOLO usa 'batch', não 'batch_size'
             "imgsz": params.get("imgsz", 640),
             "device": params.get("device", "auto"),
             "project": str(output_dir.parent),
@@ -245,21 +249,22 @@ class HyperparamService:
             "exist_ok": True
         }
         
+        # Remover batch_size se estiver presente para evitar duplicação
+        if "batch_size" in params:
+            params.pop("batch_size")
+        
         # Incluir outros parâmetros específicos
         for key, value in params.items():
             if key not in train_params:
                 train_params[key] = value
         
         # Treinar modelo
-        model_type = params.get("model_type", "yolov8")
-        model_size = params.get("model_size", "n")
-        
-        # Treinar modelo
         metrics = await self.yolo_service.train(
             dataset_id=dataset_id,
             model_type=model_type,
             model_version=model_size,
-            hyperparameters=train_params
+            hyperparameters=train_params,
+            callback=None  # Não precisamos de callback para iterações de busca
         )
         
         return metrics
@@ -283,12 +288,16 @@ class HyperparamService:
         Returns:
             Sessão de treinamento criada
         """
+        # Extrair informações do modelo
+        model_type = best_params.get("model_type", "yolov8")
+        model_size = best_params.get("model_size", "n")
+        
         # Criar sessão de treinamento
         training_session = TrainingSession(
             name=f"Modelo final da busca {search_id}",
             description=f"Modelo treinado com os melhores hiperparâmetros da busca {search_id}",
-            model_type=best_params.get("model_type", "yolov8"),
-            model_version=best_params.get("model_size", "n"),
+            model_type=model_type,
+            model_version=model_size,
             hyperparameters=best_params,
             dataset_id=dataset_id,
             status=TrainingStatus.PENDING
@@ -314,12 +323,24 @@ class HyperparamService:
             params["name"] = model_dir.name
             params["exist_ok"] = True
             
+            # Corrigir nomes de parâmetros para YOLO
+            if "batch_size" in params:
+                params["batch"] = params.pop("batch_size")
+                
+            # Remover parâmetros que não são válidos para o YOLO
+            if "model_type" in params:
+                params.pop("model_type")
+                
+            if "model_size" in params:
+                params.pop("model_size")
+            
             # Treinar modelo
             metrics = await self.yolo_service.train(
                 dataset_id=dataset_id,
-                model_type=params.get("model_type", "yolov8"),
-                model_version=params.get("model_size", "n"),
-                hyperparameters=params
+                model_type=model_type,
+                model_version=model_size,
+                hyperparameters=params,
+                callback=None  # Não precisamos de callback para o modelo final
             )
             
             # Atualizar métricas e status
@@ -330,7 +351,7 @@ class HyperparamService:
             # Copiar modelo para pasta de modelos
             model_path = model_dir / "weights" / "best.pt"
             if model_path.exists():
-                model_name = f"{params.get('model_type', 'yolov8')}{params.get('model_size', 'n')}"
+                model_name = f"{model_type}{model_size}"
                 target_path = settings.MODELS_DIR / f"{model_name}_{training_session.id}.pt"
                 shutil.copy(model_path, target_path)
                 

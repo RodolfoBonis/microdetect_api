@@ -162,7 +162,8 @@ class TrainingService:
                 dataset_id=session.dataset_id,
                 model_type=session.model_type,
                 model_version=session.model_version,
-                hyperparameters=session.hyperparameters
+                hyperparameters=session.hyperparameters,
+                callback=None  # Não utilizamos callback aqui
             )
             
             # Atualizar métricas
