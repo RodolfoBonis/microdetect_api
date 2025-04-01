@@ -111,9 +111,9 @@ class DatasetService:
         test_images = images[train_count + val_count:]
         
         # Processar imagens e anotações para cada conjunto
-        self._process_images_and_annotations(train_images, train_images_dir, train_labels_dir, dataset_id)
-        self._process_images_and_annotations(val_images, val_images_dir, val_labels_dir, dataset_id)
-        self._process_images_and_annotations(test_images, test_images_dir, test_labels_dir, dataset_id)
+        self._process_images_and_annotations(train_images, train_images_dir, train_labels_dir, dataset_id, dataset.classes)
+        self._process_images_and_annotations(val_images, val_images_dir, val_labels_dir, dataset_id, dataset.classes)
+        self._process_images_and_annotations(test_images, test_images_dir, test_labels_dir, dataset_id, dataset.classes)
         
         # Criar arquivo data.yaml
         data_yaml_path = dataset_dir / "data.yaml"
@@ -131,7 +131,7 @@ class DatasetService:
         
         return str(data_yaml_path)
     
-    def _process_images_and_annotations(self, images, images_dir, labels_dir, dataset_id):
+    def _process_images_and_annotations(self, images, images_dir, labels_dir, dataset_id, classes):
         """
         Processa as imagens e anotações para o formato YOLO.
         
@@ -140,10 +140,11 @@ class DatasetService:
             images_dir: Diretório para as imagens
             labels_dir: Diretório para as anotações (labels)
             dataset_id: ID do dataset
+            classes: Lista de nomes de classes para mapeamento
         """
         for image in images:
             # Copiar imagem para o diretório de destino
-            src_image_path = Path(image.filepath)
+            src_image_path = Path(image.file_path)
             if not src_image_path.exists():
                 continue
                 
@@ -168,16 +169,14 @@ class DatasetService:
                 for annotation in annotations:
                     # Formato YOLO: class_id x_center y_center width height
                     # Todos os valores são normalizados (0-1)
-                    class_id = annotation.class_id
-                    
-                    # Extrair coordenadas do bbox (já normalizado ou precisa normalizar)
-                    bbox = annotation.bbox  # Assumindo formato [x1, y1, x2, y2] normalizado
-                    
-                    # Converter para formato YOLO [x_center, y_center, width, height]
-                    x_center = (bbox[0] + bbox[2]) / 2
-                    y_center = (bbox[1] + bbox[3]) / 2
-                    width = bbox[2] - bbox[0]
-                    height = bbox[3] - bbox[1]
-                    
+                    class_id = classes.index(annotation.class_name)
+
+                    # IMPORTANTE: Converter as coordenadas do canto superior esquerdo (x,y)
+                    # para coordenadas do centro (x_center, y_center) conforme requerido pelo YOLO
+                    x_center = annotation.x + (annotation.width / 2)
+                    y_center = annotation.y + (annotation.height / 2)
+                    width = annotation.width
+                    height = annotation.height
+
                     # Escrever no arquivo
                     f.write(f"{class_id} {x_center} {y_center} {width} {height}\n")
