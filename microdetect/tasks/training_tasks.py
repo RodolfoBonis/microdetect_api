@@ -3,22 +3,15 @@ import json
 import logging
 from celery import Task
 from microdetect.core.celery_app import celery_app
-from microdetect.services.training_service import TrainingService
 from microdetect.services.yolo_service import YOLOService
-from microdetect.models.training import TrainingSession
+from microdetect.models.training_session import TrainingSession
 from microdetect.core.database import SessionLocal
+from microdetect.core.training_core import prepare_training_directory, prepare_training_config, update_training_status
 
 logger = logging.getLogger(__name__)
 
 class TrainingTask(Task):
-    _training_service = None
     _yolo_service = None
-    
-    @property
-    def training_service(self):
-        if self._training_service is None:
-            self._training_service = TrainingService()
-        return self._training_service
     
     @property
     def yolo_service(self):
@@ -31,22 +24,21 @@ def train_model(self, session_id: int):
     """
     Task Celery para treinar um modelo
     """
+    db = SessionLocal()
     try:
-        db = SessionLocal()
         session = db.query(TrainingSession).filter(TrainingSession.id == session_id).first()
         
         if not session:
             raise ValueError(f"Sessão de treinamento {session_id} não encontrada")
             
         # Atualizar status
-        session.status = "training"
-        db.commit()
+        update_training_status(session, "training", db=db)
         
         # Preparar diretório de treinamento
-        train_dir = self.training_service.prepare_training_directory(session)
+        train_dir = prepare_training_directory(session, settings.TRAINING_DIR)
         
         # Configurar treinamento
-        config = self.training_service.prepare_training_config(session, train_dir)
+        config = prepare_training_config(session, train_dir, db)
         
         # Iniciar treinamento
         self.yolo_service.train(
@@ -59,8 +51,7 @@ def train_model(self, session_id: int):
         )
         
         # Atualizar status final
-        session.status = "completed"
-        db.commit()
+        update_training_status(session, "completed", db=db)
         
         return {
             "status": "success",
@@ -71,9 +62,7 @@ def train_model(self, session_id: int):
     except Exception as e:
         logger.error(f"Erro durante treinamento: {str(e)}")
         if session:
-            session.status = "failed"
-            session.error_message = str(e)
-            db.commit()
+            update_training_status(session, "failed", error_message=str(e), db=db)
         raise
         
     finally:

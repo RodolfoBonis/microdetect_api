@@ -3,22 +3,20 @@ import json
 import logging
 from celery import Task
 from microdetect.core.celery_app import celery_app
-from microdetect.services.hyperparam_service import HyperparameterOptimizer
 from microdetect.services.yolo_service import YOLOService
-from microdetect.models.hyperparameter_search import HyperparameterSearch
+from microdetect.models.training_session import TrainingSession
 from microdetect.core.database import SessionLocal
+from microdetect.core.hyperparam_core import (
+    prepare_hyperparam_directory,
+    prepare_hyperparam_config,
+    update_hyperparam_status,
+    HyperparameterOptimizer
+)
 
 logger = logging.getLogger(__name__)
 
 class HyperparamTask(Task):
-    _optimizer = None
     _yolo_service = None
-    
-    @property
-    def optimizer(self):
-        if self._optimizer is None:
-            self._optimizer = HyperparameterOptimizer()
-        return self._optimizer
     
     @property
     def yolo_service(self):
@@ -27,73 +25,68 @@ class HyperparamTask(Task):
         return self._yolo_service
 
 @celery_app.task(bind=True, base=HyperparamTask)
-def run_hyperparameter_search(self, search_id: int):
+def run_hyperparameter_search(self, session_id: int):
     """
     Task Celery para executar busca de hiperparâmetros
     """
+    db = SessionLocal()
     try:
-        db = SessionLocal()
-        search = db.query(HyperparameterSearch).filter(HyperparameterSearch.id == search_id).first()
+        session = db.query(TrainingSession).filter(TrainingSession.id == session_id).first()
         
-        if not search:
-            raise ValueError(f"Busca de hiperparâmetros {search_id} não encontrada")
+        if not session:
+            raise ValueError(f"Sessão de treinamento {session_id} não encontrada")
             
         # Atualizar status
-        search.status = "running"
-        db.commit()
+        update_hyperparam_status(session, "running", db=db)
         
         # Preparar diretório
-        search_dir = self.optimizer.prepare_search_directory(search)
+        train_dir = prepare_hyperparam_directory(session, settings.TRAINING_DIR)
         
         # Configurar busca
-        config = self.optimizer.prepare_search_config(search, search_dir)
+        config = prepare_hyperparam_config(session, train_dir, db)
         
-        # Executar iterações
-        for iteration in range(search.max_iterations):
-            # Gerar parâmetros
-            params = self.optimizer.generate_parameters()
+        # Criar otimizador
+        optimizer = HyperparameterOptimizer(config["search_space"])
+        
+        best_metrics = None
+        best_params = None
+        
+        # Executar trials
+        for trial in range(config["max_trials"]):
+            # Obter próximos parâmetros para testar
+            params = optimizer.suggest_parameters()
             
-            # Treinar com parâmetros
+            # Treinar modelo com esses parâmetros
             metrics = self.yolo_service.train(
-                model_path=search.model_path,
+                model_path=session.model_path,
                 data_yaml=config["data_yaml"],
-                epochs=params["epochs"],
-                batch_size=params["batch_size"],
-                img_size=params["img_size"],
-                device=config["device"]
+                **params
             )
             
+            # Atualizar otimizador com resultados
+            optimizer.update_results(params, metrics)
+            
             # Atualizar melhor resultado
-            self.optimizer.update_best_parameters(params, metrics)
-            
-            # Salvar progresso
-            progress = {
-                "iteration": iteration + 1,
-                "parameters": params,
-                "metrics": metrics,
-                "best_parameters": self.optimizer.get_best_parameters()
-            }
-            
-            with open(os.path.join(search_dir, "progress.json"), "w") as f:
-                json.dump(progress, f)
+            if best_metrics is None or metrics[config["metric"]] > best_metrics[config["metric"]]:
+                best_metrics = metrics
+                best_params = params
         
-        # Finalizar busca
-        search.status = "completed"
-        search.best_parameters = self.optimizer.get_best_parameters()
-        db.commit()
+        # Atualizar status final
+        session.hyperparameters["best_params"] = best_params
+        session.metrics = best_metrics
+        update_hyperparam_status(session, "completed", db=db)
         
         return {
             "status": "success",
-            "search_id": search_id,
-            "best_parameters": self.optimizer.get_best_parameters()
+            "session_id": session_id,
+            "best_params": best_params,
+            "best_metrics": best_metrics
         }
         
     except Exception as e:
-        logger.error(f"Erro durante busca de hiperparâmetros: {str(e)}")
-        if search:
-            search.status = "failed"
-            search.error_message = str(e)
-            db.commit()
+        logger.error(f"Erro durante otimização: {str(e)}")
+        if session:
+            update_hyperparam_status(session, "failed", error_message=str(e), db=db)
         raise
         
     finally:
