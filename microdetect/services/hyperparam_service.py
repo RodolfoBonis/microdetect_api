@@ -765,7 +765,6 @@ asyncio.run(run_search())
                     hyperparameters={},
                     dataset_id=dataset_id,
                     status=TrainingStatus.FAILED,
-                    error_message=str(e)
                 )
                 db.add(training_session)
         finally:

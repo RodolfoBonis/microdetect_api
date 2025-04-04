@@ -7,14 +7,12 @@ from datetime import datetime
 import logging
 
 from microdetect.database.database import get_db
-from microdetect.models.hyperparam_search import HyperparamSearch, HyperparamSearchStatus
+from microdetect.models.hyperparam_search import HyperparamSearchStatus
 from microdetect.schemas.hyperparam_search import (
-    HyperparamSearchCreate,
     HyperparamSearchResponse,
-    HyperparamSearchUpdate
 )
 from microdetect.services.hyperparam_service import HyperparamService
-from microdetect.utils.serializers import build_response, build_error_response
+from microdetect.utils.serializers import build_response, build_error_response, serialize_to_dict, JSONEncoder
 
 router = APIRouter()
 hyperparam_service = HyperparamService()
@@ -104,7 +102,8 @@ async def websocket_endpoint(
         # Verificar se a busca existe
         search = await hyperparam_service.get_search(search_id, db)
         if not search:
-            await websocket.send_json({"error": "Busca não encontrada"})
+            error_json = json.dumps({"error": "Busca não encontrada"}, cls=JSONEncoder)
+            await websocket.send_text(error_json)
             await websocket.close()
             return
         
@@ -124,8 +123,9 @@ async def websocket_endpoint(
             # Também incluir dados de progresso raw para debug
             "progress": progress_data,
         })
-        
-        await websocket.send_json(initial_data)
+
+        json_data = json.dumps(initial_data, cls=JSONEncoder)
+        await websocket.send_text(json_data)
         
         # Monitorar atualizações
         last_update = None
@@ -154,9 +154,9 @@ async def websocket_endpoint(
                     # Incluir dados de progresso raw para debug
                     "progress": progress_data,
                 })
-                
-                # Enviar atualização
-                await websocket.send_json(update_data)
+
+                json_data = json.dumps(update_data, cls=JSONEncoder)
+                await websocket.send_text(json_data)
                 
             # Verificar se a busca terminou baseado nos dados de progresso
             if progress_data.get("status") in ["completed", "failed"]:
@@ -171,7 +171,8 @@ async def websocket_endpoint(
                     "status": progress_data.get("status", search.status),
                     "progress": progress_data
                 })
-                await websocket.send_json(final_data)
+                json_data = json.dumps(final_data, cls=JSONEncoder)
+                await websocket.send_text(json_data)
                 break
             
             # Aguardar próxima atualização
@@ -184,7 +185,8 @@ async def websocket_endpoint(
         # Erro durante monitoramento
         logger.error(f"Erro no websocket: {str(e)}")
         try:
-            await websocket.send_json({"error": str(e)})
+            error_json = json.dumps({"error": str(e)}, cls=JSONEncoder)
+            await websocket.send_text(error_json)
         except:
             pass
     finally:

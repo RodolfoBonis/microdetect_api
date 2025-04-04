@@ -5,6 +5,7 @@ import asyncio
 import json
 from datetime import datetime
 
+from microdetect.core.config import Settings
 from microdetect.database.database import get_db
 from microdetect.models.training_session import TrainingSession, TrainingStatus
 from microdetect.models.training_report import TrainingReport
@@ -13,7 +14,7 @@ from microdetect.schemas.training_report import TrainingReportResponse
 from microdetect.schemas.hyperparam_search import TrainingProgress, TrainingMetrics, ResourceUsage
 from microdetect.services.yolo_service import YOLOService
 from microdetect.services.resource_monitor import ResourceMonitor
-from microdetect.utils.serializers import build_response, build_error_response
+from microdetect.utils.serializers import build_response, build_error_response, serialize_to_dict, JSONEncoder
 from microdetect.services.training_service import TrainingService
 
 router = APIRouter()
@@ -149,7 +150,8 @@ async def websocket_endpoint(
         # Verificar se a sessão existe
         session = db.query(TrainingSession).filter(TrainingSession.id == session_id).first()
         if not session:
-            await websocket.send_json({"error": "Sessão de treinamento não encontrada"})
+            error_json = json.dumps({"error": "Sessão de treinamento não encontrada"}, cls=JSONEncoder)
+            await websocket.send_text(error_json)
             await websocket.close()
             return
         
@@ -168,9 +170,9 @@ async def websocket_endpoint(
             "resources": progress_data.get("resources", {}),
             "progress": progress_data  # Dados brutos para debug
         })
-        
-        await websocket.send_json(initial_data)
-        
+
+        json_data = json.dumps(initial_data, cls=JSONEncoder)
+        await websocket.send_text(json_data)
         # Monitorar progresso
         last_update = None
         while True:
@@ -198,7 +200,8 @@ async def websocket_endpoint(
                 })
                 
                 # Enviar atualização
-                await websocket.send_json(update_data)
+                json_data = json.dumps(update_data, cls=JSONEncoder)
+                await websocket.send_text(json_data)
                 
             # Verificar se o treinamento terminou baseado nos dados de progresso
             if progress_data.get("status") in ["completed", "failed"] or session.status in [TrainingStatus.COMPLETED, TrainingStatus.FAILED]:
@@ -206,11 +209,12 @@ async def websocket_endpoint(
                 report = db.query(TrainingReport).filter(TrainingReport.training_session_id == session_id).first()
                 if report:
                     response = TrainingReportResponse.from_orm(report)
-                    await websocket.send_json({
+                    json_data = json.dumps({
                         "type": "final_report",
                         "data": response.dict(),
                         "status": session.status
-                    })
+                    }, cls=JSONEncoder)
+                    await websocket.send_text(json_data)
                 break
             
             # Aguardar próxima atualização
@@ -225,7 +229,8 @@ async def websocket_endpoint(
         error_details = traceback.format_exc()
         print(f"Erro no websocket: {str(e)}\n{error_details}")
         try:
-            await websocket.send_json({"error": str(e)})
+            error_json = json.dumps({"error": str(e)}, cls=JSONEncoder)
+            await websocket.send_text(error_json)
         except:
             pass
     finally:
@@ -257,7 +262,7 @@ async def train_model(session_id: int, db: Session):
         db.commit()
         
         # Configurar diretório de treinamento
-        model_dir = settings.TRAINING_DIR / f"model_{session.id}"
+        model_dir = Settings.TRAINING_DIR / f"model_{session.id}"
         model_dir.mkdir(parents=True, exist_ok=True)
         
         # Configurar callbacks para progresso
@@ -366,7 +371,7 @@ async def generate_training_report(session_id: int, db: Session):
         
         # Tamanho do modelo
         model_size_mb = 0
-        model_path = settings.MODELS_DIR / f"{session.model_type}{session.model_version}_{session.id}.pt"
+        model_path = Settings.MODELS_DIR / f"{session.model_type}{session.model_version}_{session.id}.pt"
         if model_path.exists():
             model_size_mb = model_path.stat().st_size / (1024 * 1024)
         

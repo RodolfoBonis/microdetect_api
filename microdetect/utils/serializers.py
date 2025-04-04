@@ -3,17 +3,25 @@ from datetime import datetime, date
 from typing import Any, Dict, List, Union
 
 class JSONEncoder(json.JSONEncoder):
-    """Classe personalizada para serializar tipos Python em JSON."""
-    
+    """Custom JSON encoder for Python types."""
+
     def default(self, obj):
-        # Converter datetime para ISO format
+        # Handle datetime
         if isinstance(obj, (datetime, date)):
             return obj.isoformat()
-        
-        # Tentar obter um dicionário se o objeto tiver __dict__
+
+        # Handle Enum classes
+        if hasattr(obj, '__members__'):
+            return str(obj)
+
+        # Handle Enum values
+        if hasattr(obj, 'value') and hasattr(obj, 'name') and hasattr(type(obj), '__members__'):
+            return obj.value
+
+        # Try to get a dictionary
         if hasattr(obj, "__dict__"):
             return obj.__dict__
-            
+
         return super().default(obj)
 
 def serialize_to_json(obj: Any) -> str:
