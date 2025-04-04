@@ -12,11 +12,11 @@ from sqlalchemy.orm import Session
 from microdetect.database.database import get_db
 import shutil
 import asyncio
-import subprocess
-import sys
 import logging
 import torch
 from microdetect.services.dataset_service import DatasetService
+from microdetect.tasks.training_tasks import train_model
+from microdetect.core.websocket_manager import WebSocketManager
 
 logger = logging.getLogger(__name__)
 
@@ -29,9 +29,8 @@ class TrainingService:
         self.training_dir = settings.TRAINING_DIR
         self.training_dir.mkdir(parents=True, exist_ok=True)
         self.yolo_service = YOLOService()
-        self._training_tasks = {}
         self._db = next(get_db())  # Obter uma sessão do banco para usar nos métodos
-        self._progress_data = {}  # Armazenar dados de progresso em tempo real
+        self.websocket_manager = WebSocketManager()
 
     async def create_training_session(
         self,
@@ -166,7 +165,7 @@ class TrainingService:
 
     async def start_training(self, session_id: int) -> TrainingSession:
         """
-        Inicia o treinamento de uma sessão de forma assíncrona em um processo separado.
+        Inicia o treinamento de uma sessão usando Celery.
         
         Args:
             session_id: ID da sessão
@@ -179,17 +178,160 @@ class TrainingService:
         # Atualizar status
         session.status = "training"
         session.started_at = datetime.utcnow()
+        self._db.commit()
         
-        # Inicializar dados de progresso
-        self._progress_data[session_id] = {
-            "current_epoch": 0,
-            "total_epochs": session.hyperparameters.get("epochs", 100),
-            "metrics": {},
-            "resources": {},
-            "status": "running"
-        }
+        # Iniciar task Celery
+        task = train_model.delay(session_id)
         
+        # Iniciar monitoramento via WebSocket
+        asyncio.create_task(self._monitor_training_progress(session_id, task.id))
+        
+        return session
+
+    async def _monitor_training_progress(self, session_id: int, task_id: str):
+        """
+        Monitora o progresso do treinamento e envia atualizações via WebSocket.
+        """
         try:
+            while True:
+                # Obter status da task
+                task = train_model.AsyncResult(task_id)
+                
+                if task.ready():
+                    # Treinamento concluído
+                    if task.successful():
+                        result = task.get()
+                        await self.websocket_manager.broadcast_json(
+                            f"training_{session_id}",
+                            {
+                                "status": "completed",
+                                "metrics": result.get("metrics", {}),
+                                "message": "Treinamento concluído com sucesso"
+                            }
+                        )
+                    else:
+                        error = str(task.result)
+                        await self.websocket_manager.broadcast_json(
+                            f"training_{session_id}",
+                            {
+                                "status": "failed",
+                                "error": error,
+                                "message": "Erro durante o treinamento"
+                            }
+                        )
+                    break
+                
+                # Obter progresso atual
+                session = await self.get_training_session(session_id)
+                if session.metrics:
+                    await self.websocket_manager.broadcast_json(
+                        f"training_{session_id}",
+                        {
+                            "status": "training",
+                            "metrics": session.metrics,
+                            "current_epoch": session.metrics.get("epoch", 0),
+                            "total_epochs": session.hyperparameters.get("epochs", 100)
+                        }
+                    )
+                
+                await asyncio.sleep(1)  # Atualizar a cada segundo
+                
+        except Exception as e:
+            logger.error(f"Erro ao monitorar progresso do treinamento: {e}")
+            await self.websocket_manager.broadcast_json(
+                f"training_{session_id}",
+                {
+                    "status": "error",
+                    "error": str(e),
+                    "message": "Erro ao monitorar progresso"
+                }
+            )
+
+    async def get_training_session_info(self, session_id: int) -> Dict[str, Any]:
+        """
+        Obtém informações sobre uma sessão de treinamento.
+        
+        Args:
+            session_id: ID da sessão
+            
+        Returns:
+            Dicionário com informações da sessão
+        """
+        session = await self.get_training_session(session_id)
+        dataset = self._db.query(Dataset).get(session.dataset_id)
+        
+        return {
+            "id": session.id,
+            "name": session.name,
+            "description": session.description,
+            "dataset": {
+                "id": dataset.id,
+                "name": dataset.name,
+                "classes": dataset.classes
+            },
+            "model": {
+                "type": session.model_type,
+                "version": session.model_version
+            },
+            "hyperparameters": session.hyperparameters,
+            "status": session.status,
+            "metrics": session.metrics,
+            "error_message": session.error_message,
+            "created_at": session.created_at,
+            "started_at": session.started_at,
+            "completed_at": session.completed_at
+        }
+
+    async def get_training_log(self, session_id: int) -> str:
+        """
+        Obtém o log de treinamento de uma sessão.
+        
+        Args:
+            session_id: ID da sessão
+            
+        Returns:
+            Conteúdo do arquivo de log
+        """
+        session = await self.get_training_session(session_id)
+        
+        if not os.path.exists(session.log_file):
+            return ""
+        
+        with open(session.log_file, "r") as f:
+            return f.read()
+
+    async def export_model(
+        self,
+        session_id: int,
+        format: str = "onnx"
+    ) -> str:
+        """
+        Exporta o modelo treinado em uma sessão.
+        
+        Args:
+            session_id: ID da sessão
+            format: Formato de exportação (onnx, torchscript, etc.)
+            
+        Returns:
+            Caminho do modelo exportado
+        """
+        session = await self.get_training_session(session_id)
+        
+        if session.status != "completed":
+            raise ValueError("Sessão não concluída")
+        
+        # Exportar modelo
+        export_path = await self.yolo_service.export(
+            model_id=session.model_id,
+            format=format
+        )
+        
+        return export_path
+
+    def __del__(self):
+        """Fecha a sessão do banco quando o serviço for destruído."""
+        try:
+            self._db.close()
             # Salvar configuração para o processo em um arquivo
             session_dir = Path(session.log_file).parent
             config_path = session_dir / "training_config.json"

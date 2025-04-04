@@ -70,6 +70,12 @@ void connectToHyperparamSearchWebSocket(int searchId) {
     (message) {
       final data = jsonDecode(message);
       
+      // Verificar se é um heartbeat
+      if (data['type'] == 'heartbeat') {
+        // Ignorar heartbeats
+        return;
+      }
+      
       // Atualizar UI com progresso de busca
       setState(() {
         searchStatus = data['status'];
@@ -106,6 +112,12 @@ void dispose() {
   super.dispose();
 }
 ```
+
+> **Nota sobre WebSockets**: Os endpoints WebSocket agora incluem:
+> - Heartbeats a cada 30 segundos para manter a conexão viva
+> - Atualizações mais frequentes (a cada 100ms)
+> - Verificação granular de mudanças para otimizar o tráfego
+> - Melhor tratamento de erros e reconexões
 
 ### 2.3. Obter Lista de Buscas
 
@@ -200,6 +212,12 @@ void connectToTrainingWebSocket(int sessionId) {
     (message) {
       final data = jsonDecode(message);
       
+      // Verificar se é um heartbeat
+      if (data['type'] == 'heartbeat') {
+        // Ignorar heartbeats
+        return;
+      }
+      
       // Verificar se é um relatório final
       if (data['type'] == 'final_report') {
         setState(() {
@@ -252,6 +270,12 @@ void connectToTrainingWebSocket(int sessionId) {
   _wsChannel = ws;
 }
 ```
+
+> **Nota sobre WebSockets**: Os endpoints WebSocket agora incluem:
+> - Heartbeats a cada 30 segundos para manter a conexão viva
+> - Atualizações mais frequentes (a cada 100ms)
+> - Verificação granular de mudanças para otimizar o tráfego
+> - Melhor tratamento de erros e reconexões
 
 ### 3.3. Obter Relatório de Treinamento
 
@@ -714,3 +738,91 @@ class TrainingMetrics {
    - Progresso de épocas (atual/total)
 6. Quando treinamento termina, frontend recebe relatório final
 7. Frontend exibe detalhes do relatório com visualizações interativas 
+
+## 7. Melhorias Recentes nos WebSockets
+
+### 7.1. Atualizações em Tempo Real
+
+Os endpoints WebSocket foram otimizados para fornecer atualizações mais frequentes e eficientes:
+
+- **Intervalo de Atualização**: Reduzido de 1 segundo para 100ms (0.1 segundos)
+- **Verificação Granular**: Monitoramento separado de diferentes tipos de dados (métricas, recursos, etc.)
+- **Otimização de Dados**: Envio de atualizações apenas quando há mudanças significativas
+
+### 7.2. Heartbeat
+
+Para manter conexões WebSocket estáveis durante sessões longas:
+
+- **Heartbeat Automático**: Enviado a cada 30 segundos
+- **Prevenção de Timeouts**: Evita desconexões por inatividade
+- **Tratamento de Reconexão**: Facilita a reconexão em caso de problemas de rede
+
+### 7.3. Tratamento de Erros Aprimorado
+
+Melhor tratamento de erros e exceções:
+
+- **Logging Detalhado**: Mensagens de erro mais informativas
+- **Tratamento em Múltiplos Níveis**: Captura de erros em diferentes pontos do ciclo de vida
+- **Limpeza de Recursos**: Garantia de que recursos sejam liberados adequadamente
+
+### 7.4. Exemplo de Implementação no Frontend
+
+```dart
+// Exemplo de implementação com tratamento de heartbeat
+void connectToWebSocket(String url) {
+  final ws = WebSocketChannel.connect(Uri.parse(url));
+  
+  ws.stream.listen(
+    (message) {
+      final data = jsonDecode(message);
+      
+      // Verificar se é um heartbeat
+      if (data['type'] == 'heartbeat') {
+        // Atualizar timestamp do último heartbeat
+        _lastHeartbeatTime = DateTime.now();
+        return;
+      }
+      
+      // Processar dados normais
+      processWebSocketData(data);
+    },
+    onDone: () {
+      // Tentar reconectar após um curto período
+      Future.delayed(Duration(seconds: 2), () {
+        if (mounted) {
+          connectToWebSocket(url);
+        }
+      });
+    },
+    onError: (error) {
+      print('Erro na conexão WebSocket: $error');
+      // Tentar reconectar após um curto período
+      Future.delayed(Duration(seconds: 2), () {
+        if (mounted) {
+          connectToWebSocket(url);
+        }
+      });
+    }
+  );
+  
+  // Iniciar monitoramento de heartbeat
+  _startHeartbeatMonitoring();
+  
+  // Armazenar para fechar depois
+  _wsChannel = ws;
+}
+
+void _startHeartbeatMonitoring() {
+  Timer.periodic(Duration(seconds: 60), (timer) {
+    if (_lastHeartbeatTime != null) {
+      final difference = DateTime.now().difference(_lastHeartbeatTime!);
+      if (difference.inSeconds > 60) {
+        // Não recebemos heartbeat por mais de 60 segundos
+        print('Conexão WebSocket pode estar inativa');
+        _wsChannel?.sink.close();
+        timer.cancel();
+      }
+    }
+  });
+}
+``` 

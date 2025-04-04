@@ -107,6 +107,9 @@ async def websocket_endpoint(
             await websocket.close()
             return
         
+        # Configurar heartbeat
+        heartbeat_task = asyncio.create_task(send_heartbeat(websocket))
+        
         # Obter dados de progresso em tempo real
         progress_data = hyperparam_service.get_progress(search_id)
         
@@ -116,12 +119,12 @@ async def websocket_endpoint(
         
         # Adaptar os dados para o frontend
         initial_data.update({
-            # Campos esperados pelo frontend
             "trials_data": progress_data.get("trials", []),
             "current_iteration": progress_data.get("current_iteration", 0),
             "iterations_completed": progress_data.get("iterations_completed", 0),
-            # Também incluir dados de progresso raw para debug
-            "progress": progress_data,
+            "best_params": progress_data.get("best_params", {}),
+            "best_metrics": progress_data.get("best_metrics", {}),
+            "progress": progress_data
         })
 
         json_data = json.dumps(initial_data, cls=JSONEncoder)
@@ -129,69 +132,103 @@ async def websocket_endpoint(
         
         # Monitorar atualizações
         last_update = None
+        last_trials = None
+        last_best_params = None
+        last_best_metrics = None
+        
         while True:
-            # Obter dados de progresso atualizados
-            progress_data = hyperparam_service.get_progress(search_id)
-            
-            # Se os dados são diferentes da última atualização, enviar
-            if last_update != progress_data:
-                last_update = progress_data.copy()
+            try:
+                # Obter dados de progresso atualizados
+                progress_data = hyperparam_service.get_progress(search_id)
                 
-                # Atualizar busca para ter os dados mais recentes
-                db.refresh(search)
-                response = HyperparamSearchResponse.from_orm(search)
-                update_data = response.dict()
+                # Verificar se houve mudanças significativas
+                current_trials = progress_data.get("trials", [])
+                current_best_params = progress_data.get("best_params", {})
+                current_best_metrics = progress_data.get("best_metrics", {})
                 
-                # Adaptar os dados para o frontend
-                update_data.update({
-                    # Campos esperados pelo frontend
-                    "trials_data": progress_data.get("trials", []),
-                    "current_iteration": progress_data.get("current_iteration", 0),
-                    "iterations_completed": progress_data.get("iterations_completed", 0),
-                    # Campos para compatibilidade
-                    "best_params": progress_data.get("best_params", {}),
-                    "best_metrics": progress_data.get("best_metrics", {}),
-                    # Incluir dados de progresso raw para debug
-                    "progress": progress_data,
-                })
+                should_update = (
+                    last_update != progress_data or
+                    last_trials != current_trials or
+                    last_best_params != current_best_params or
+                    last_best_metrics != current_best_metrics
+                )
+                
+                if should_update:
+                    last_update = progress_data.copy()
+                    last_trials = current_trials.copy()
+                    last_best_params = current_best_params.copy()
+                    last_best_metrics = current_best_metrics.copy()
+                    
+                    # Atualizar busca para ter os dados mais recentes
+                    db.refresh(search)
+                    response = HyperparamSearchResponse.from_orm(search)
+                    update_data = response.dict()
+                    
+                    # Adaptar os dados para o frontend
+                    update_data.update({
+                        "trials_data": current_trials,
+                        "current_iteration": progress_data.get("current_iteration", 0),
+                        "iterations_completed": progress_data.get("iterations_completed", 0),
+                        "best_params": current_best_params,
+                        "best_metrics": current_best_metrics,
+                        "progress": progress_data
+                    })
 
-                json_data = json.dumps(update_data, cls=JSONEncoder)
-                await websocket.send_text(json_data)
+                    json_data = json.dumps(update_data, cls=JSONEncoder)
+                    await websocket.send_text(json_data)
                 
-            # Verificar se a busca terminou baseado nos dados de progresso
-            if progress_data.get("status") in ["completed", "failed"]:
-                # Enviar uma atualização final
-                db.refresh(search)
-                response = HyperparamSearchResponse.from_orm(search)
-                final_data = response.dict()
-                final_data.update({
-                    "trials_data": progress_data.get("trials", []),
-                    "best_params": progress_data.get("best_params", {}),
-                    "best_metrics": progress_data.get("best_metrics", {}),
-                    "status": progress_data.get("status", search.status),
-                    "progress": progress_data
-                })
-                json_data = json.dumps(final_data, cls=JSONEncoder)
-                await websocket.send_text(json_data)
+                # Verificar se a busca terminou
+                if progress_data.get("status") in ["completed", "failed"]:
+                    # Enviar uma atualização final
+                    db.refresh(search)
+                    response = HyperparamSearchResponse.from_orm(search)
+                    final_data = response.dict()
+                    final_data.update({
+                        "trials_data": current_trials,
+                        "best_params": current_best_params,
+                        "best_metrics": current_best_metrics,
+                        "status": progress_data.get("status", search.status),
+                        "progress": progress_data
+                    })
+                    json_data = json.dumps(final_data, cls=JSONEncoder)
+                    await websocket.send_text(json_data)
+                    break
+                
+                # Aguardar próxima atualização (intervalo menor para mais realtime)
+                await asyncio.sleep(0.1)  # 100ms entre atualizações
+                
+            except Exception as e:
+                logger.error(f"Erro durante monitoramento: {str(e)}")
+                error_json = json.dumps({"error": str(e)}, cls=JSONEncoder)
+                await websocket.send_text(error_json)
                 break
             
-            # Aguardar próxima atualização
-            await asyncio.sleep(1)
-            
     except WebSocketDisconnect:
-        # Cliente desconectou
-        pass
+        logger.info(f"Cliente desconectou do websocket de hiperparâmetros {search_id}")
     except Exception as e:
-        # Erro durante monitoramento
-        logger.error(f"Erro no websocket: {str(e)}")
+        logger.error(f"Erro no websocket de hiperparâmetros: {str(e)}")
         try:
             error_json = json.dumps({"error": str(e)}, cls=JSONEncoder)
             await websocket.send_text(error_json)
         except:
             pass
     finally:
+        # Cancelar heartbeat
+        if 'heartbeat_task' in locals():
+            heartbeat_task.cancel()
         # Garantir que o websocket seja fechado
         try:
             await websocket.close()
         except:
-            pass 
+            pass
+
+async def send_heartbeat(websocket: WebSocket):
+    """Envia heartbeat para manter a conexão viva."""
+    try:
+        while True:
+            await asyncio.sleep(30)  # Heartbeat a cada 30 segundos
+            await websocket.send_text(json.dumps({"type": "heartbeat"}))
+    except asyncio.CancelledError:
+        pass
+    except Exception as e:
+        logger.error(f"Erro no heartbeat: {str(e)}") 

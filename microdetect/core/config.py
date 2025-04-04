@@ -50,6 +50,12 @@ class Settings:
     # Configurações do banco de dados
     DATABASE_URL: str = "sqlite:///{}".format(str(BASE_DIR / "microdetect.db"))
     
+    # Redis settings
+    REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
+    REDIS_PORT = os.getenv("REDIS_PORT", "6379")
+    REDIS_DB = os.getenv("REDIS_DB", "0")
+    REDIS_URL = f"redis://{REDIS_HOST}:{REDIS_PORT}/{REDIS_DB}"
+
     def __post_init__(self):
         # Configurar DATABASE_URL se não foi definido por variável de ambiente
         if not self.DATABASE_URL:
