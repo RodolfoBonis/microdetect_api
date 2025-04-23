@@ -53,16 +53,21 @@ def list_datasets(
     # Para cada dataset, carregar a contagem de imagens e anotações
     for dataset in datasets:
         # Contagem de imagens
-        dataset.images_count = db.query(func.count(Image.id)).filter(Image.dataset_id == dataset.id).scalar() or 0
+        dataset.images_count = db.query(func.count(DatasetImage.id)).filter(DatasetImage.dataset_id == dataset.id).scalar() or 0
         
         # Contagem de anotações
         dataset.annotations_count = db.query(func.count(Annotation.id)) \
             .join(Image, Annotation.image_id == Image.id) \
-            .filter(Image.dataset_id == dataset.id) \
+            .join(DatasetImage, DatasetImage.image_id == Image.id) \
+            .filter(DatasetImage.dataset_id == dataset.id) \
             .scalar() or 0
         
         # Buscar a primeira imagem do dataset para usar como thumb
-        first_image = db.query(Image).filter(Image.dataset_id == dataset.id).order_by(Image.id).first()
+        first_image = db.query(Image) \
+            .join(DatasetImage, DatasetImage.image_id == Image.id) \
+            .filter(DatasetImage.dataset_id == dataset.id) \
+            .order_by(Image.id) \
+            .first()
         
         # Adicionar atributo thumb com a URL da imagem ou string vazia
         dataset.thumb = first_image.url if first_image else ""
@@ -85,16 +90,21 @@ def get_dataset(
         return build_error_response("Dataset não encontrado", 404)
     
     # Carregar a contagem de imagens
-    dataset.images_count = db.query(func.count(Image.id)).filter(Image.dataset_id == dataset.id).scalar() or 0
+    dataset.images_count = db.query(func.count(DatasetImage.id)).filter(DatasetImage.dataset_id == dataset.id).scalar() or 0
     
     # Carregar a contagem de anotações
     dataset.annotations_count = db.query(func.count(Annotation.id)) \
         .join(Image, Annotation.image_id == Image.id) \
-        .filter(Image.dataset_id == dataset.id) \
+        .join(DatasetImage, DatasetImage.image_id == Image.id) \
+        .filter(DatasetImage.dataset_id == dataset.id) \
         .scalar() or 0
     
     # Buscar a primeira imagem do dataset para usar como thumb
-    first_image = db.query(Image).filter(Image.dataset_id == dataset.id).order_by(Image.id).first()
+    first_image = db.query(Image) \
+        .join(DatasetImage, DatasetImage.image_id == Image.id) \
+        .filter(DatasetImage.dataset_id == dataset.id) \
+        .order_by(Image.id) \
+        .first()
     
     # Adicionar atributo thumb com a URL da imagem ou string vazia
     dataset.thumb = first_image.url if first_image else ""
@@ -124,16 +134,21 @@ def update_dataset(
     dataset = DatasetService(db).update(dataset, dataset_update)
     
     # Carregar a contagem de imagens
-    dataset.images_count = db.query(func.count(Image.id)).filter(Image.dataset_id == dataset.id).scalar() or 0
+    dataset.images_count = db.query(func.count(DatasetImage.id)).filter(DatasetImage.dataset_id == dataset.id).scalar() or 0
     
     # Carregar a contagem de anotações
     dataset.annotations_count = db.query(func.count(Annotation.id)) \
         .join(Image, Annotation.image_id == Image.id) \
-        .filter(Image.dataset_id == dataset.id) \
+        .join(DatasetImage, DatasetImage.image_id == Image.id) \
+        .filter(DatasetImage.dataset_id == dataset.id) \
         .scalar() or 0
     
     # Buscar a primeira imagem do dataset para usar como thumb
-    first_image = db.query(Image).filter(Image.dataset_id == dataset.id).order_by(Image.id).first()
+    first_image = db.query(Image) \
+        .join(DatasetImage, DatasetImage.image_id == Image.id) \
+        .filter(DatasetImage.dataset_id == dataset.id) \
+        .order_by(Image.id) \
+        .first()
     
     # Adicionar atributo thumb com a URL da imagem ou string vazia
     dataset.thumb = first_image.url if first_image else ""
@@ -173,18 +188,20 @@ def get_dataset_statistics(
         return build_error_response("Dataset não encontrado", 404)
     
     # Contagem de imagens
-    total_images = db.query(func.count(Image.id)).filter(Image.dataset_id == dataset_id).scalar() or 0
+    total_images = db.query(func.count(DatasetImage.id)).filter(DatasetImage.dataset_id == dataset_id).scalar() or 0
     
     # Contagem total de anotações
     total_annotations = db.query(func.count(Annotation.id)) \
         .join(Image, Annotation.image_id == Image.id) \
-        .filter(Image.dataset_id == dataset_id) \
+        .join(DatasetImage, DatasetImage.image_id == Image.id) \
+        .filter(DatasetImage.dataset_id == dataset_id) \
         .scalar() or 0
     
     # Imagens com anotações vs. sem anotações
     annotated_images_query = db.query(func.count(func.distinct(Image.id))) \
         .join(Annotation, Annotation.image_id == Image.id) \
-        .filter(Image.dataset_id == dataset_id)
+        .join(DatasetImage, DatasetImage.image_id == Image.id) \
+        .filter(DatasetImage.dataset_id == dataset_id)
     
     annotated_images = annotated_images_query.scalar() or 0
     unannotated_images = total_images - annotated_images
@@ -204,7 +221,8 @@ def get_dataset_statistics(
             SELECT a.class_name, COUNT(*) as count
             FROM annotations a
             JOIN images i ON a.image_id = i.id
-            WHERE i.dataset_id = :dataset_id
+            JOIN dataset_images di ON di.image_id = i.id
+            WHERE di.dataset_id = :dataset_id
             GROUP BY a.class_name
             ORDER BY count DESC
             """),
@@ -232,8 +250,10 @@ def get_dataset_statistics(
         # Listar todas as imagens do dataset para diagnóstico
         images_data = db.execute(
             text("""
-            SELECT id, file_name, width, height FROM images 
-            WHERE dataset_id = :dataset_id
+            SELECT i.id, i.file_name, i.width, i.height 
+            FROM images i
+            JOIN dataset_images di ON di.image_id = i.id
+            WHERE di.dataset_id = :dataset_id
             LIMIT 10
             """),
             {"dataset_id": dataset_id}
@@ -246,11 +266,10 @@ def get_dataset_statistics(
             # Abordagem 1: Tentar calcular média usando SQL
             size_query_result = db.execute(
                 text("""
-                SELECT AVG(CAST(width AS FLOAT)) as avg_width, AVG(CAST(height AS FLOAT)) as avg_height
-                FROM images
-                WHERE dataset_id = :dataset_id 
-                AND width IS NOT NULL AND width > 0
-                AND height IS NOT NULL AND height > 0
+                SELECT AVG(CAST(i.width AS FLOAT)) as avg_width, AVG(CAST(i.height AS FLOAT)) as avg_height
+                FROM images i
+                JOIN dataset_images di ON di.image_id = i.id
+                WHERE di.dataset_id = :dataset_id
                 """),
                 {"dataset_id": dataset_id}
             ).fetchone()
@@ -298,7 +317,8 @@ def get_dataset_statistics(
             SELECT a.x, a.y, a.width, a.height, i.width as img_width, i.height as img_height
             FROM annotations a
             JOIN images i ON a.image_id = i.id
-            WHERE i.dataset_id = :dataset_id 
+            JOIN dataset_images di ON di.image_id = i.id
+            WHERE di.dataset_id = :dataset_id 
             AND a.x IS NOT NULL AND a.y IS NOT NULL
             AND a.width IS NOT NULL AND a.height IS NOT NULL
             """),
@@ -490,7 +510,8 @@ def get_class_distribution(
                 SELECT a.class_name, COUNT(*) as count
                 FROM annotations a
                 JOIN images i ON a.image_id = i.id
-                WHERE i.dataset_id = :dataset_id
+                JOIN dataset_images di ON di.image_id = i.id
+                WHERE di.dataset_id = :dataset_id
                 GROUP BY a.class_name
                 """),
                 {"dataset_id": dataset_id}

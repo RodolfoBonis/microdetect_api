@@ -3,104 +3,186 @@ from typing import Optional, Dict, Any, Set, List
 import os
 import dotenv
 from dataclasses import dataclass, field
+from pydantic_settings import BaseSettings
+import logging
+
+logger = logging.getLogger(__name__)
 
 # Carregar variáveis de ambiente do arquivo .env se existir
 dotenv.load_dotenv(".env")
 
-@dataclass
-class Settings:
-    # Configurações básicas
+class Settings(BaseSettings):
+    # Diretórios
+    BASE_DIR: str = os.path.expanduser("~/.microdetect")
+    DATA_DIR: str = os.path.expanduser("~/.microdetect/data")
+    DATASETS_DIR: str = os.path.expanduser("~/.microdetect/data/datasets")
+    MODELS_DIR: str = os.path.expanduser("~/.microdetect/data/models")
+    IMAGES_DIR: str = os.path.expanduser("~/.microdetect/data/images")
+    GALLERY_DIR: str = os.path.expanduser("~/.microdetect/data/gallery")
+    TEMP_DIR: str = os.path.expanduser("~/.microdetect/data/temp")
+    STATIC_DIR: str = os.path.expanduser("~/.microdetect/data/static")
+    TRAINING_DIR: str = os.path.expanduser("~/.microdetect/data/training")
+    ANNOTATIONS_DIR: str = os.path.expanduser("~/.microdetect/data/annotations")
+    EXPORTS_DIR: str = os.path.expanduser("~/.microdetect/data/exports")
+    
+    # Banco de dados
+    DATABASE_URL: str = f"sqlite:///{os.path.expanduser('~/.microdetect/microdetect.db')}"
+    
+    # API
     API_V1_STR: str = "/api/v1"
     PROJECT_NAME: str = "MicroDetect API"
-
-    # Diretórios base
-    BASE_DIR: Path = Path(os.path.expanduser("~/.microdetect"))
-    APP_DIR: Path = BASE_DIR / "app"
-
-    # Diretório no home do usuário
-    HOME_DIR: Path = Path.home() / ".microdetect"
-
-    # Diretórios de dados (agora no ~/.microdetect)
-    DATA_DIR: Path = BASE_DIR / "data"
-    DATASETS_DIR: Path = DATA_DIR / "datasets"
-    MODELS_DIR: Path = DATA_DIR / "models"
-    IMAGES_DIR: Path = DATA_DIR / "images"
-    GALLERY_DIR: Path = DATA_DIR / "gallery"
-    TEMP_DIR: Path = DATA_DIR / "temp"
-    STATIC_DIR: Path = DATA_DIR / "static"
-
-    # Diretórios específicos
-    ANNOTATIONS_DIR: Path = DATA_DIR / "annotations"
-    TRAINING_DIR: Path = DATA_DIR / "training"
-    EXPORTS_DIR: Path = DATA_DIR / "exports"
-
-    # Configurações do servidor
-    HOST: str = "0.0.0.0"
-    PORT: int = 8000
-    DEBUG: bool = False
-
-    # Configurações de segurança
-    SECRET_KEY: str = os.getenv("SECRET_KEY", "your-secret-key-here")
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "30"))
-
-    # Configurações de upload
-    MAX_UPLOAD_SIZE: int = 10 * 1024 * 1024  # 10MB
-    ALLOWED_IMAGE_TYPES: Set[str] = field(default_factory=lambda: {"image/jpeg", "image/png", "image/tiff"})
-
-    # Configurações do banco de dados
-    DATABASE_URL: str = "sqlite:///{}".format(str(BASE_DIR / "microdetect.db"))
     
-    # Redis settings
-    REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
-    REDIS_PORT = os.getenv("REDIS_PORT", "6379")
-    REDIS_DB = os.getenv("REDIS_DB", "0")
-    REDIS_URL = f"redis://{REDIS_HOST}:{REDIS_PORT}/{REDIS_DB}"
+    # Redis
+    REDIS_HOST: str = "localhost"
+    REDIS_PORT: str = "6379"
+    REDIS_DB: str = "0"
+    REDIS_URL: str = "redis://localhost:6379/0"
+    
+    # CUDA/GPU
+    USE_CUDA: bool = False  # Será atualizado automaticamente na inicialização
+    CUDA_DEVICE: str = "cuda:0"
+    FORCE_CPU: bool = False  # Se True, força o uso de CPU mesmo com GPU disponível
+    
+    # Celery
+    CELERY_BROKER_URL: str = "amqp://microdetect:microdetect123@localhost:5672//"
+    CELERY_RESULT_BACKEND: str = "redis://localhost:6379/0"
+    
+    # Treinamento
+    DEFAULT_MODEL_TYPE: str = "yolov8"
+    DEFAULT_MODEL_VERSION: str = "n"
+    MAX_BATCH_SIZE: int = 32
+    MAX_IMAGE_SIZE: int = 640
+    
+    model_config = {
+        "case_sensitive": True,
+        "env_file": ".env"
+    }
 
-    def __post_init__(self):
-        # Configurar DATABASE_URL se não foi definido por variável de ambiente
-        if not self.DATABASE_URL:
-            self.DATABASE_URL = f"sqlite:///{self.HOME_DIR}/microdetect.db"
-            
-        # Criar diretórios necessários se não existirem
-        self.HOME_DIR.mkdir(exist_ok=True)
-        self.DATA_DIR.mkdir(exist_ok=True)
-        self.DATASETS_DIR.mkdir(exist_ok=True)
-        self.MODELS_DIR.mkdir(exist_ok=True)
-        self.IMAGES_DIR.mkdir(exist_ok=True)
-        self.GALLERY_DIR.mkdir(exist_ok=True)
-        self.TEMP_DIR.mkdir(exist_ok=True)
-        self.STATIC_DIR.mkdir(exist_ok=True)
-        self.ANNOTATIONS_DIR.mkdir(exist_ok=True)
-        self.TRAINING_DIR.mkdir(exist_ok=True)
-        self.EXPORTS_DIR.mkdir(exist_ok=True)
-
-    # Configurações do modelo YOLO
-    YOLO_MODEL_PATH: Path = MODELS_DIR / "best.pt"
-    CONFIDENCE_THRESHOLD: float = float(os.getenv("CONFIDENCE_THRESHOLD", "0.5"))
-    IOU_THRESHOLD: float = float(os.getenv("IOU_THRESHOLD", "0.45"))
-
-    # Configurações de processamento
-    MAX_WORKERS: int = os.cpu_count() or 4
-    BATCH_SIZE: int = int(os.getenv("BATCH_SIZE", "32"))
-
-    def create_directories(self):
-        """Cria os diretórios necessários para a aplicação"""
-        dirs = [
-            self.BASE_DIR,
-            self.DATA_DIR,
-            self.IMAGES_DIR,
-            self.ANNOTATIONS_DIR,
-            self.TRAINING_DIR,
-            self.MODELS_DIR,
-            self.EXPORTS_DIR,
-            self.TEMP_DIR
-        ]
-        
-        for directory in dirs:
-            directory.mkdir(parents=True, exist_ok=True)
-            
-    def __init__(self):
-        """Inicializa as configurações e cria diretórios necessários"""
-        self.create_directories()
-
+# Criar instância das configurações
 settings = Settings()
+
+# Criar diretórios
+for directory in [
+    settings.BASE_DIR,
+    settings.DATA_DIR,
+    settings.DATASETS_DIR,
+    settings.MODELS_DIR,
+    settings.IMAGES_DIR,
+    settings.GALLERY_DIR,
+    settings.TEMP_DIR,
+    settings.STATIC_DIR,
+    settings.TRAINING_DIR,
+    settings.ANNOTATIONS_DIR,
+    settings.EXPORTS_DIR
+]:
+    path = Path(directory)
+    if not path.exists():
+        path.mkdir(parents=True, exist_ok=True)
+        logger.info(f"Diretório criado: {path}")
+
+# Atualizar USE_CUDA baseado na disponibilidade real de CUDA
+try:
+    import torch
+    settings.USE_CUDA = torch.cuda.is_available() and not settings.FORCE_CPU
+except ImportError:
+    settings.USE_CUDA = False
+
+# Configurações básicas
+API_V1_STR: str = "/api/v1"
+PROJECT_NAME: str = "MicroDetect API"
+
+# Diretórios base
+BASE_DIR: Path = Path(os.path.expanduser("~/.microdetect"))
+APP_DIR: Path = BASE_DIR / "app"
+
+# Diretório no home do usuário
+HOME_DIR: Path = Path.home() / ".microdetect"
+
+# Diretórios de dados (agora no ~/.microdetect)
+DATA_DIR: Path = Path(os.path.expanduser("~/.microdetect/data"))
+DATASETS_DIR: Path = Path(os.path.expanduser("~/.microdetect/data/datasets"))
+MODELS_DIR: Path = Path(os.path.expanduser("~/.microdetect/data/models"))
+IMAGES_DIR: Path = Path(os.path.expanduser("~/.microdetect/data/images"))
+GALLERY_DIR: Path = Path(os.path.expanduser("~/.microdetect/data/gallery"))
+TEMP_DIR: Path = Path(os.path.expanduser("~/.microdetect/data/temp"))
+STATIC_DIR: Path = Path(os.path.expanduser("~/.microdetect/data/static"))
+
+# Diretórios específicos
+ANNOTATIONS_DIR: Path = DATA_DIR / "annotations"
+TRAINING_DIR: Path = DATA_DIR / "training"
+EXPORTS_DIR: Path = DATA_DIR / "exports"
+
+# Configurações do servidor
+HOST: str = "0.0.0.0"
+PORT: int = 8000
+DEBUG: bool = False
+
+# Configurações de segurança
+SECRET_KEY: str = os.getenv("SECRET_KEY", "your-secret-key-here")
+ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "30"))
+
+# Configurações de upload
+MAX_UPLOAD_SIZE: int = 10 * 1024 * 1024  # 10MB
+ALLOWED_IMAGE_TYPES: Set[str] = field(default_factory=lambda: {"image/jpeg", "image/png", "image/tiff"})
+
+# Configurações do banco de dados
+DATABASE_URL: str = "sqlite:///microdetect.db"
+
+# Redis settings
+REDIS_HOST: str = "localhost"
+REDIS_PORT: str = "6379"
+REDIS_DB: str = "0"
+REDIS_URL: str = "redis://localhost:6379/0"
+
+# CUDA/GPU
+USE_CUDA: bool = False  # Será atualizado automaticamente na inicialização
+CUDA_DEVICE: str = "cuda:0"
+FORCE_CPU: bool = False  # Se True, força o uso de CPU mesmo com GPU disponível
+
+# Celery
+CELERY_BROKER_URL: str = "amqp://microdetect:microdetect123@localhost:5672//"
+CELERY_RESULT_BACKEND: str = "redis://localhost:6379/0"
+
+# Treinamento
+DEFAULT_MODEL_TYPE: str = "yolov8"
+DEFAULT_MODEL_VERSION: str = "n"
+MAX_BATCH_SIZE: int = 32
+MAX_IMAGE_SIZE: int = 640
+
+# Configurações de processamento
+MAX_WORKERS: int = os.cpu_count() or 4
+BATCH_SIZE: int = int(os.getenv("BATCH_SIZE", "32"))
+
+def create_directories(self):
+    """Cria os diretórios necessários para a aplicação"""
+    dirs = [
+        self.BASE_DIR,
+        self.DATA_DIR,
+        self.IMAGES_DIR,
+        self.ANNOTATIONS_DIR,
+        self.TRAINING_DIR,
+        self.MODELS_DIR,
+        self.EXPORTS_DIR,
+        self.TEMP_DIR
+    ]
+    
+    for directory in dirs:
+        if not directory.exists():
+            directory.mkdir(parents=True, exist_ok=True)
+            logger.info(f"Diretório criado: {directory}")
+        
+def __init__(self):
+    """Inicializa as configurações e cria diretórios necessários"""
+    self.create_directories()
+
+def model_post_init(self, *args, **kwargs):
+    """Método chamado após a inicialização do modelo."""
+    self.update_cuda_status()
+
+def update_cuda_status(self):
+    """Atualiza o status do CUDA."""
+    try:
+        import torch
+        self.USE_CUDA = torch.cuda.is_available() and not self.FORCE_CPU
+    except ImportError:
+        self.USE_CUDA = False

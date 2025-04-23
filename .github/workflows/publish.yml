@@ -1,4 +1,4 @@
-name: Deploy to AWS CodeArtifact
+name: Deploy to PyPI
 
 on:
   release:
@@ -119,11 +119,11 @@ jobs:
           path: release_info.txt
 
   build_and_deploy:
-    name: Build and Deploy to AWS CodeArtifact
+    name: Build and Deploy to PyPI
     needs: get_release_info
     runs-on: ubuntu-latest
     outputs:
-      error_message: ${{ steps.set_version.outputs.error_message || steps.install_deps.outputs.error_message || steps.build.outputs.error_message || steps.aws_credentials.outputs.error_message || steps.login_codeartifact.outputs.error_message || steps.deploy.outputs.error_message }}
+      error_message: ${{ steps.set_version.outputs.error_message || steps.install_deps.outputs.error_message || steps.build.outputs.error_message || steps.deploy.outputs.error_message }}
     steps:
       - uses: actions/checkout@v4
 
@@ -150,42 +150,11 @@ jobs:
         run: |
           python -m build
 
-      - name: Configure AWS credentials
-        id: aws_credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_REGION }}
-
-      - name: Login to AWS CodeArtifact
-        id: login_codeartifact
-        run: |
-          token=$(aws codeartifact get-authorization-token \
-            --domain ${{ secrets.AWS_CODEARTIFACT_DOMAIN }} \
-            --domain-owner ${{ secrets.AWS_CODEARTIFACT_OWNER || secrets.AWS_ACCOUNT_ID || '$(aws sts get-caller-identity --query "Account" --output text)' }} \
-            --query authorizationToken \
-            --output text)
-
-          echo "::add-mask::$token"
-          echo "codeartifact_token=$token" >> $GITHUB_OUTPUT
-
-          repository_endpoint=$(aws codeartifact get-repository-endpoint \
-            --domain ${{ secrets.AWS_CODEARTIFACT_DOMAIN }} \
-            --domain-owner ${{ secrets.AWS_CODEARTIFACT_OWNER || secrets.AWS_ACCOUNT_ID || '$(aws sts get-caller-identity --query "Account" --output text)' }} \
-            --repository ${{ secrets.AWS_CODEARTIFACT_REPOSITORY }} \
-            --format pypi \
-            --query repositoryEndpoint \
-            --output text)
-
-          echo "repository_url=$repository_endpoint" >> $GITHUB_OUTPUT
-
-      - name: Deploy to AWS CodeArtifact
+      - name: Deploy to PyPI
         id: deploy
         env:
-          TWINE_USERNAME: aws
-          TWINE_PASSWORD: ${{ steps.login_codeartifact.outputs.codeartifact_token }}
-          TWINE_REPOSITORY_URL: ${{ steps.login_codeartifact.outputs.repository_url }}
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
         run: |
           twine upload dist/*
 
@@ -213,13 +182,12 @@ jobs:
           message_thread_id: ${{ secrets.THREAD_ID }}
           parse_mode: 'markdown'
           text: |
-            ✅ *Successfully Deployed to AWS CodeArtifact!*
+            ✅ *Successfully Deployed to PyPI!*
 
             *Details:*
             • Package: MicroDetect
             • Version: ${{ needs.get_release_info.outputs.version }}
-            • Repository: ${{ secrets.AWS_CODEARTIFACT_REPOSITORY }}
-            • Domain: ${{ secrets.AWS_CODEARTIFACT_DOMAIN }}
+            • Repository: PyPI
 
                   📦 [View GitHub Action](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
                   🔗 [View Release](https://github.com/${{ github.repository }}/releases/tag/v${{ needs.get_release_info.outputs.version }})
@@ -234,13 +202,11 @@ jobs:
           message_thread_id: ${{ secrets.THREAD_ID }}
           parse_mode: 'markdown'
           text: |
-            ❌ *Failed to Deploy to AWS CodeArtifact!*
+            ❌ *Failed to Deploy to PyPI!*
             
             *Error Details:*
             • Package: MicroDetect
             • Version: ${{ needs.get_release_info.outputs.version }}
-            • Repository: ${{ secrets.AWS_CODEARTIFACT_REPOSITORY }}
-            • Domain: ${{ secrets.AWS_CODEARTIFACT_DOMAIN }}
             
             ${{ needs.build_and_deploy.outputs.error_message }}
             

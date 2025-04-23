@@ -1,12 +1,16 @@
-from sqlalchemy import Column, Integer, DateTime, ForeignKey
-from datetime import datetime
-from microdetect.database.database import Base
+from sqlalchemy import Column, String, Integer, ForeignKey
+from sqlalchemy.orm import relationship
 
-# Tabela de associação entre datasets e imagens
-class DatasetImage(Base):
+from microdetect.models.base import BaseModel
+
+class DatasetImage(BaseModel):
+    """Modelo para imagens de datasets."""
     __tablename__ = "dataset_images"
 
-    id = Column(Integer, primary_key=True, index=True)
-    dataset_id = Column(Integer, ForeignKey("datasets.id"), nullable=False, index=True)
-    image_id = Column(Integer, ForeignKey("images.id"), nullable=False, index=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    dataset_id = Column(Integer, ForeignKey("datasets.id"), nullable=False)
+    image_id = Column(Integer, ForeignKey("images.id"), nullable=False)
+    path = Column(String, nullable=False)
+    
+    # Relacionamentos
+    dataset = relationship("Dataset", back_populates="dataset_images")
+    image_ref = relationship("Image", back_populates="dataset_images")

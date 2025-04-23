@@ -2,7 +2,7 @@ import os
 import logging
 import torch
 from ultralytics import YOLO
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 from pathlib import Path
 
 from microdetect.core.config import settings
@@ -18,8 +18,18 @@ logger.info(f"CUDA available in YOLOService: {CUDA_AVAILABLE}")
 
 class YOLOService:
     def __init__(self):
-        self.models_dir = settings.MODELS_DIR
+        self.models_dir = Path(settings.MODELS_DIR)
         self.models_dir.mkdir(parents=True, exist_ok=True)
+        
+        self.device = "cuda:0" if settings.USE_CUDA else "cpu"
+        logger.info(f"CUDA available in YOLOService: {settings.USE_CUDA}")
+        
+        # Carregar modelo padrão se existir
+        self.model = None
+        default_model_path = self.models_dir / "best.pt"
+        if default_model_path.exists():
+            self.load_model(str(default_model_path))
+        
         self._model_cache = {}
 
     async def train(

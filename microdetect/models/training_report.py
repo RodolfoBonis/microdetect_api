@@ -1,12 +1,12 @@
 from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, JSON, Float
 from sqlalchemy.orm import relationship
 from datetime import datetime
-from microdetect.database.database import Base
 
-class TrainingReport(Base):
+from microdetect.models.base import BaseModel
+
+class TrainingReport(BaseModel):
     __tablename__ = "training_reports"
 
-    id = Column(Integer, primary_key=True, index=True)
     model_name = Column(String(255), nullable=False)
     metrics_history = Column(JSON)  # Lista de métricas por época
     confusion_matrix = Column(JSON)  # Matriz de confusão
@@ -20,7 +20,6 @@ class TrainingReport(Base):
     test_images_count = Column(Integer)   # Número de imagens de teste
     training_time_seconds = Column(Integer)  # Tempo total de treinamento
     model_size_mb = Column(Float)  # Tamanho do modelo em MB
-    created_at = Column(DateTime, default=datetime.utcnow)
     
     # Chaves estrangeiras
     training_session_id = Column(Integer, ForeignKey("training_sessions.id"))

@@ -70,6 +70,10 @@ async def upload_image(
             image_info['image_metadata']['height'] = height
     
     # Criar registro no banco
+    # Remover dataset_id do dicionário antes de criar o objeto Image
+    if 'dataset_id' in image_info:
+        dataset_id = image_info.pop('dataset_id')
+    
     db_image = Image(**image_info)
     db.add(db_image)
     db.commit()
@@ -84,7 +88,8 @@ async def upload_image(
                 # Criar associação na tabela de relacionamento
                 dataset_image = DatasetImage(
                     dataset_id=dataset_id,
-                    image_id=db_image.id
+                    image_id=db_image.id,
+                    path=db_image.file_path  # Adicionar o caminho do arquivo
                 )
                 db.add(dataset_image)
                 db.commit()
@@ -115,9 +120,9 @@ def list_images(
     
     # Filtrar por dataset_id se fornecido
     if dataset_id:
-        # Buscar imagens que pertencem ao dataset específico (tanto pela coluna dataset_id quanto pela relação N:N)
+        # Buscar imagens que pertencem ao dataset específico através da relação N:N
         query = query.outerjoin(DatasetImage, Image.id == DatasetImage.image_id).filter(
-            or_(Image.dataset_id == dataset_id, DatasetImage.dataset_id == dataset_id)
+            DatasetImage.dataset_id == dataset_id
         ).distinct()
     
     # Executar a query com paginação
@@ -131,10 +136,6 @@ def list_images(
         # Obter as associações através da tabela pivô
         dataset_associations = db.query(DatasetImage).filter(DatasetImage.image_id == image.id).all()
         dataset_ids = [assoc.dataset_id for assoc in dataset_associations]
-        
-        # Incluir também o dataset_id primário, se existir
-        if image.dataset_id is not None and image.dataset_id not in dataset_ids:
-            dataset_ids.append(image.dataset_id)
         
         # Preparar lista simplificada de datasets
         datasets = []
@@ -177,7 +178,6 @@ def list_images(
             "width": image.width,
             "height": image.height,
             "file_size": image.file_size,
-            "dataset_id": image.dataset_id,
             "created_at": image.created_at.isoformat() if image.created_at else None,
             "updated_at": image.updated_at.isoformat() if image.updated_at else None,
             "datasets": datasets,
@@ -204,10 +204,6 @@ def get_image(
     # Obter as associações através da tabela pivô
     dataset_associations = db.query(DatasetImage).filter(DatasetImage.image_id == image.id).all()
     dataset_ids = [assoc.dataset_id for assoc in dataset_associations]
-    
-    # Incluir também o dataset_id primário, se existir
-    if image.dataset_id is not None and image.dataset_id not in dataset_ids:
-        dataset_ids.append(image.dataset_id)
     
     # Preparar lista simplificada de datasets
     datasets = []
@@ -250,7 +246,6 @@ def get_image(
         "width": image.width,
         "height": image.height,
         "file_size": image.file_size,
-        "dataset_id": image.dataset_id,
         "created_at": image.created_at.isoformat() if image.created_at else None,
         "updated_at": image.updated_at.isoformat() if image.updated_at else None,
         "datasets": datasets,

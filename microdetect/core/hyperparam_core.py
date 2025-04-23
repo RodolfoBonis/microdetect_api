@@ -9,6 +9,7 @@ from microdetect.models.training_session import TrainingSession
 from microdetect.models.dataset import Dataset
 from microdetect.services.yolo_service import YOLOService
 from sqlalchemy.orm import Session
+from microdetect.models.hyperparam_search import HyperparamSearch
 
 logger = logging.getLogger(__name__)
 
@@ -39,23 +40,36 @@ def prepare_hyperparam_directory(session: TrainingSession, base_dir: Path) -> Pa
     session_dir.mkdir(exist_ok=True)
     return session_dir
 
-def prepare_hyperparam_config(session: TrainingSession, train_dir: Path, db: Session) -> Dict[str, Any]:
+def prepare_hyperparam_config(search: HyperparamSearch, train_dir: str, db: Session) -> Dict[str, Any]:
     """
     Prepara a configuração para otimização de hiperparâmetros.
     """
-    dataset = db.query(Dataset).get(session.dataset_id)
-    if not dataset:
-        raise ValueError(f"Dataset {session.dataset_id} não encontrado")
+    try:
+        # Verificar se o diretório existe
+        if not os.path.exists(train_dir):
+            os.makedirs(train_dir)
+            
+        # Criar arquivo de configuração
+        config = {
+            "dataset_id": search.dataset_id,
+            "search_space": search.search_space,  # Usar search_space ao invés de hyperparameters
+            "max_trials": search.iterations,
+            "train_dir": train_dir,
+            "model_type": "yolov8",  # TODO: Tornar configurável
+            "model_version": "n",     # TODO: Tornar configurável
+            "device": "cpu" if not settings.USE_CUDA else "cuda"
+        }
         
-    config = {
-        "data_yaml": str(train_dir / "data.yaml"),
-        "search_space": session.hyperparameters.get("search_space", {}),
-        "max_trials": session.hyperparameters.get("max_trials", 10),
-        "metric": session.hyperparameters.get("metric", "map"),
-        "direction": session.hyperparameters.get("direction", "maximize")
-    }
-    
-    return config
+        # Salvar configuração
+        config_path = os.path.join(train_dir, "hyperparam_config.json")
+        with open(config_path, "w") as f:
+            json.dump(config, f, indent=4)
+            
+        return config
+        
+    except Exception as e:
+        logger.error(f"Erro ao preparar configuração: {str(e)}")
+        raise
 
 def update_hyperparam_status(session: TrainingSession, status: str, error_message: str = None, db: Session = None):
     """
