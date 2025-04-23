@@ -14,16 +14,33 @@ class DatasetBase(BaseSchema):
     def __init__(self, 
                 name: str, 
                 description: Optional[str] = None, 
-                classes: Optional[List[str]] = None):
+                classes: Optional[List[str]] = None,
+                path: Optional[str] = None):
         super().__init__(
             name=name,
             description=description,
-            classes=classes if classes is not None else []
+            classes=classes if classes is not None else [],
+            path=path
         )
 
 class DatasetCreate(DatasetBase):
     """Classe para criação de um dataset."""
-    pass
+    def __init__(self,
+                name: str,
+                description: Optional[str] = None,
+                classes: Optional[List[str]] = None):
+        from microdetect.core.config import settings
+        import os
+        
+        # Gerar path baseado no nome do dataset
+        path = os.path.join(settings.DATASETS_DIR, name)
+        
+        super().__init__(
+            name=name,
+            description=description,
+            classes=classes,
+            path=path
+        )
 
 class DatasetUpdate(BaseSchema):
     def __init__(self,

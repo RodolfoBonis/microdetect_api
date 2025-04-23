@@ -7,11 +7,24 @@ from microdetect.core.config import settings
 from microdetect.models.image import Image
 from microdetect.models.dataset import Dataset
 from microdetect.models.dataset_image import DatasetImage
+import cv2
+import numpy as np
+import logging
+from PIL import Image as PILImage
+import io
+
+logger = logging.getLogger(__name__)
 
 class ImageService:
     def __init__(self):
-        self.images_dir = settings.IMAGES_DIR
+        self.images_dir = Path(settings.IMAGES_DIR)
+        self.gallery_dir = Path(settings.GALLERY_DIR)
+        self.temp_dir = Path(settings.TEMP_DIR)
+        
+        # Criar diretórios se não existirem
         self.images_dir.mkdir(parents=True, exist_ok=True)
+        self.gallery_dir.mkdir(parents=True, exist_ok=True)
+        self.temp_dir.mkdir(parents=True, exist_ok=True)
 
     def save_image(
         self,
@@ -36,9 +49,6 @@ class ImageService:
         Returns:
             Dicionário com informações da imagem salva
         """
-        import io
-        from PIL import Image as PILImage
-
         # Determinar diretório de destino
         dest_dir = self.images_dir
         if dataset_id:
@@ -198,7 +208,10 @@ class ImageService:
         query = Image.query
         
         if dataset_id:
-            query = query.filter_by(dataset_id=dataset_id)
+            # Usar a tabela DatasetImage para filtrar por dataset_id
+            query = query.join(DatasetImage, Image.id == DatasetImage.image_id).filter(
+                DatasetImage.dataset_id == dataset_id
+            )
         
         return query.offset(skip).limit(limit).all()
 
@@ -234,7 +247,7 @@ class ImageService:
         shutil.move(image.file_path, new_filepath)
         
         # Atualizar registro
-        image.dataset_id = new_dataset_id
+        # Não atualizar dataset_id diretamente, pois não existe no modelo Image
         image.file_path = str(new_filepath)
         
         return image
@@ -367,7 +380,8 @@ class ImageService:
         # Criar a associação na tabela de relacionamento
         association = DatasetImage(
             dataset_id=dataset_id,
-            image_id=image_id
+            image_id=image_id,
+            path=str(final_dest_path)
         )
         
         db.add(association)

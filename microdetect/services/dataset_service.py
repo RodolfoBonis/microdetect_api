@@ -31,6 +31,11 @@ class DatasetService:
         """
         Criar um novo dataset.
         """
+        # Criar o diretório do dataset
+        import os
+        os.makedirs(dataset_in.path, exist_ok=True)
+        
+        # Criar o dataset no banco de dados
         db_dataset = Dataset(**dataset_in.dict())
         self.db.add(db_dataset)
         self.db.commit()

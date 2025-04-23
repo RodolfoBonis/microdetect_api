@@ -2,7 +2,8 @@ from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, JSON, Enum
 from sqlalchemy.orm import relationship
 from datetime import datetime
 import enum
-from microdetect.database.database import Base
+
+from microdetect.models.base import BaseModel
 
 class TrainingStatus(str, enum.Enum):
     PENDING = "pending"
@@ -10,10 +11,9 @@ class TrainingStatus(str, enum.Enum):
     COMPLETED = "completed"
     FAILED = "failed"
 
-class TrainingSession(Base):
+class TrainingSession(BaseModel):
     __tablename__ = "training_sessions"
 
-    id = Column(Integer, primary_key=True, index=True)
     name = Column(String(255), nullable=False)
     description = Column(String(500))
     status = Column(Enum(TrainingStatus), default=TrainingStatus.PENDING)
@@ -21,8 +21,6 @@ class TrainingSession(Base):
     model_version = Column(String(50))  # Versão do modelo
     hyperparameters = Column(JSON)  # Parâmetros de treinamento
     metrics = Column(JSON)  # Métricas de treinamento (loss, accuracy, etc.)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     started_at = Column(DateTime)
     completed_at = Column(DateTime)
     
@@ -32,4 +30,5 @@ class TrainingSession(Base):
     # Relacionamentos
     dataset = relationship("Dataset", back_populates="training_sessions")
     model = relationship("Model", back_populates="training_session", uselist=False)
-    reports = relationship("TrainingReport", back_populates="training_session") 
+    reports = relationship("TrainingReport", back_populates="training_session")
+    hyperparam_search = relationship("HyperparamSearch", back_populates="training_session", uselist=False) 

@@ -1,6 +1,5 @@
 from datetime import datetime
 from typing import Optional, Dict, Any, List
-from microdetect.models.hyperparam_search import HyperparamSearchStatus
 from microdetect.schemas.base import BaseSchema
 
 class HyperparamSearchBase(BaseSchema):
@@ -24,27 +23,25 @@ class HyperparamSearchCreate(HyperparamSearchBase):
 
 class HyperparamSearchUpdate(BaseSchema):
     def __init__(self,
-                status: Optional[HyperparamSearchStatus] = None,
+                status: Optional[str] = None,
                 best_params: Optional[Dict[str, Any]] = None,
                 best_metrics: Optional[Dict[str, Any]] = None,
                 trials_data: Optional[List[Dict[str, Any]]] = None,
                 started_at: Optional[datetime] = None,
-                completed_at: Optional[datetime] = None,
-                training_session_id: Optional[int] = None):
+                completed_at: Optional[datetime] = None):
         super().__init__(
             status=status,
             best_params=best_params,
             best_metrics=best_metrics,
             trials_data=trials_data,
             started_at=started_at,
-            completed_at=completed_at,
-            training_session_id=training_session_id
+            completed_at=completed_at
         )
 
 class HyperparamSearchResponse(HyperparamSearchBase):
     def __init__(self,
                 id: int,
-                status: HyperparamSearchStatus,
+                status: str,
                 name: str,
                 dataset_id: int,
                 search_space: Dict[str, Any],
@@ -87,27 +84,35 @@ class HyperparamSearchResponse(HyperparamSearchBase):
     
     @classmethod
     def from_orm(cls, obj):
-        """Converte um objeto ORM para este schema."""
+        """Converte um objeto HyperparamSearch para este schema."""
         return cls(
             id=obj.id,
             name=obj.name,
-            description=getattr(obj, 'description', None),
+            description=obj.description,
             dataset_id=obj.dataset_id,
-            search_space=getattr(obj, 'search_space', {}),
-            iterations=getattr(obj, 'iterations', 5),
+            search_space=obj.search_space,
+            iterations=obj.iterations,
             status=obj.status,
-            best_params=getattr(obj, 'best_params', {}),
-            best_metrics=getattr(obj, 'best_metrics', {}),
-            trials_data=getattr(obj, 'trials_data', []),
+            best_params=obj.best_params,
+            best_metrics=obj.best_metrics,
+            trials_data=obj.trials_data,
             created_at=obj.created_at,
             updated_at=obj.updated_at,
-            started_at=getattr(obj, 'started_at', None),
-            completed_at=getattr(obj, 'completed_at', None),
-            training_session_id=getattr(obj, 'training_session_id', None),
-            current_iteration=None,
-            iterations_completed=None,
-            current_params=None,
-            progress=None
+            started_at=obj.started_at,
+            completed_at=obj.completed_at,
+            training_session_id=obj.training_session_id,
+            current_iteration=len(obj.trials_data),
+            iterations_completed=len(obj.trials_data),
+            current_params=obj.best_params,
+            progress={
+                "status": obj.status,
+                "trials": obj.trials_data,
+                "best_params": obj.best_params,
+                "best_metrics": obj.best_metrics,
+                "current_iteration": len(obj.trials_data),
+                "iterations_completed": len(obj.trials_data),
+                "total_iterations": obj.iterations
+            }
         )
 
 class HyperparamTrialCreate(BaseSchema):

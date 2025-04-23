@@ -402,8 +402,8 @@ def get_dataset_classes(dataset_id: int, db: Session = Depends(get_db)):
         SELECT a.class_name, COUNT(a.id) as count
         FROM annotations a
         JOIN images i ON i.id = a.image_id
-        WHERE (i.dataset_id = :dataset_id OR 
-            EXISTS (SELECT 1 FROM dataset_images di WHERE di.dataset_id = :dataset_id AND di.image_id = i.id))
+        JOIN dataset_images di ON di.image_id = i.id
+        WHERE di.dataset_id = :dataset_id
             AND a.class_name IS NOT NULL
         GROUP BY a.class_name
         ORDER BY count DESC
