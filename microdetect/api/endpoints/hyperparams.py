@@ -5,6 +5,7 @@ import asyncio
 import json
 from datetime import datetime
 import logging
+import uuid
 
 from microdetect.database.database import get_db
 from microdetect.models.training_session import TrainingStatus
@@ -14,10 +15,16 @@ from microdetect.schemas.hyperparam_search import (
 )
 from microdetect.services.hyperparam_service import HyperparamService
 from microdetect.utils.serializers import build_response, build_error_response, serialize_to_dict, JSONEncoder
+from microdetect.core.websocket_utils import send_hyperparam_update, WS_CHANNEL_PREFIX, websocket_manager
 
 router = APIRouter()
 hyperparam_service = HyperparamService()
 logger = logging.getLogger(__name__)
+
+# Não precisamos inicializar novamente o gerenciador de WebSockets, usamos a instância de websocket_utils
+
+# Constantes
+# Removido WS_CHANNEL_PREFIX, importado do websocket_utils
 
 @router.post("/", response_model=None)
 async def create_hyperparam_search(
@@ -98,194 +105,148 @@ async def delete_hyperparam_search(
     return {"message": "Busca de hiperparâmetros removida com sucesso"}
 
 @router.websocket("/ws/{search_id}")
-async def websocket_endpoint(
-    websocket: WebSocket,
-    search_id: int,
-    db: Session = Depends(get_db)
-):
-    """Websocket para monitoramento em tempo real de busca de hiperparâmetros."""
-    heartbeat_task = None
+async def websocket_endpoint(websocket: WebSocket, search_id: str, db: Session = Depends(get_db)):
+    """Endpoint WebSocket para monitoramento de buscas de hiperparâmetros"""
+    client_id = str(uuid.uuid4())
+    
+    # Conectar cliente (sem verificação de token por enquanto)
+    await websocket_manager.connect(client_id, websocket)
+    
     try:
-        logger.info(f"WebSocket: Iniciando conexão para search_id={search_id}")
-        await websocket.accept()
-        logger.info(f"WebSocket: Conexão aceita para search_id={search_id}")
-        
-        # Verificar se a busca existe
+        # Verificar se a busca de hiperparâmetros existe
         search = db.query(HyperparamSearch).filter(HyperparamSearch.id == search_id).first()
         if not search:
-            logger.warning(f"WebSocket: Busca não encontrada para search_id={search_id}")
-            error_json = json.dumps({"error": "Busca não encontrada"}, cls=JSONEncoder)
-            await websocket.send_text(error_json)
-            await websocket.close(code=1000)  # Fechamento normal
+            await websocket.send_json({
+                "error": "Busca de hiperparâmetros não encontrada",
+                "code": 4004
+            })
+            await websocket_manager.disconnect(client_id)
             return
         
-        logger.info(f"WebSocket: Busca encontrada para search_id={search_id}, status={search.status}")
-        
-        # Configurar heartbeat
-        heartbeat_task = asyncio.create_task(send_heartbeat(websocket))
-        logger.info(f"WebSocket: Heartbeat iniciado para search_id={search_id}")
-        
-        # Obter dados de progresso em tempo real
-        try:
-            progress_data = hyperparam_service.get_progress(search_id)
-            logger.info(f"WebSocket: Dados de progresso obtidos para search_id={search_id}")
-        except Exception as e:
-            logger.error(f"WebSocket: Erro ao obter dados de progresso para search_id={search_id}: {str(e)}")
-            progress_data = {
-                "status": search.status,
-                "trials": [],
-                "best_params": {},
-                "best_metrics": {},
-                "current_iteration": 0,
-                "iterations_completed": 0,
-                "total_iterations": search.iterations
-            }
+        # Registrar cliente para receber atualizações da busca
+        websocket_manager.register_client_for_session(client_id, search_id)
+        logger.info(f"Cliente {client_id} registrado para receber atualizações da busca {search_id}")
         
         # Enviar estado inicial
+        search_state = {
+            "id": search.id,
+            "status": search.status,
+            "created_at": search.created_at.isoformat() if search.created_at else None,
+            "updated_at": search.updated_at.isoformat() if search.updated_at else None,
+            "dataset_id": search.dataset_id,
+            "best_trial": getattr(search, "best_trial", None),
+            "search_space": search.search_space,
+            "current_trial": getattr(search, "current_trial", None),
+            "progress": getattr(search, "progress", None),
+            "error": getattr(search, "error", None)
+        }
+        
+        await websocket.send_json({
+            "type": "initial_state",
+            "data": search_state
+        })
+        
+        # Esperar confirmação do cliente
         try:
-            response = HyperparamSearchResponse.from_orm(search)
-            initial_data = response.dict()
-            
-            # Adaptar os dados para o frontend
-            initial_data.update({
-                "trials_data": progress_data.get("trials", []),
-                "current_iteration": progress_data.get("current_iteration", 0),
-                "iterations_completed": progress_data.get("iterations_completed", 0),
-                "best_params": progress_data.get("best_params", {}),
-                "best_metrics": progress_data.get("best_metrics", {}),
-                "progress": progress_data
-            })
-
-            json_data = json.dumps(initial_data, cls=JSONEncoder)
-            await websocket.send_text(json_data)
-            logger.info(f"WebSocket: Estado inicial enviado para search_id={search_id}")
+            data = await websocket.receive_json()
+            if data.get("type") == "acknowledge":
+                logger.info(f"Cliente {client_id} confirmou o recebimento do estado inicial")
         except Exception as e:
-            logger.error(f"WebSocket: Erro ao enviar estado inicial para search_id={search_id}: {str(e)}")
-            error_json = json.dumps({"error": f"Erro ao processar dados: {str(e)}"}, cls=JSONEncoder)
-            await websocket.send_text(error_json)
-            await websocket.close(code=1011)  # Erro interno
-            return
+            logger.warning(f"Erro ao receber confirmação: {e}")
         
-        # Monitorar atualizações
-        last_update = None
-        last_trials = None
-        last_best_params = None
-        last_best_metrics = None
-        
-        while True:
-            try:
-                # Verificar se a conexão ainda está ativa
-                if websocket.client_state.DISCONNECTED:
-                    logger.info(f"WebSocket: Cliente desconectado para search_id={search_id}")
+        # Função de heartbeat
+        async def send_heartbeat():
+            while True:
+                try:
+                    if not websocket_manager.active_connections.get(client_id):
+                        break
+                    await websocket.send_json({"type": "heartbeat", "time": str(datetime.now())})
+                    await asyncio.sleep(30)  # Enviar heartbeat a cada 30 segundos
+                except Exception as e:
+                    logger.error(f"Erro no heartbeat: {e}")
                     break
-                    
-                # Obter dados de progresso atualizados usando a sessão do parâmetro
-                search = db.query(HyperparamSearch).filter(HyperparamSearch.id == search_id).first()
-                if not search:
-                    logger.warning(f"WebSocket: Busca não encontrada durante monitoramento para search_id={search_id}")
-                    break
-                    
-                progress_data = {
-                    "status": search.status,
-                    "trials": search.trials_data or [],
-                    "best_params": search.best_params or {},
-                    "best_metrics": search.best_metrics or {},
-                    "current_iteration": len(search.trials_data or []),
-                    "iterations_completed": len(search.trials_data or []),
-                    "total_iterations": search.iterations
-                }
-                
-                # Verificar se houve mudanças significativas
-                current_trials = progress_data.get("trials", [])
-                current_best_params = progress_data.get("best_params", {})
-                current_best_metrics = progress_data.get("best_metrics", {})
-                
-                should_update = (
-                    last_update != progress_data or
-                    last_trials != current_trials or
-                    last_best_params != current_best_params or
-                    last_best_metrics != current_best_metrics
-                )
-                
-                if should_update:
-                    last_update = progress_data.copy()
-                    last_trials = current_trials.copy()
-                    last_best_params = current_best_params.copy()
-                    last_best_metrics = current_best_metrics.copy()
-                    
-                    try:
-                        # Atualizar busca para ter os dados mais recentes
-                        response = HyperparamSearchResponse.from_orm(search)
-                        update_data = response.dict()
-                        
-                        # Adaptar os dados para o frontend
-                        update_data.update({
-                            "trials_data": current_trials,
-                            "current_iteration": len(current_trials),
-                            "iterations_completed": len(current_trials),
-                            "best_params": current_best_params,
-                            "best_metrics": current_best_metrics,
-                            "progress": progress_data
-                        })
-
-                        json_data = json.dumps(update_data, cls=JSONEncoder)
-                        await websocket.send_text(json_data)
-                        logger.debug(f"WebSocket: Atualização enviada para search_id={search_id}, status={search.status}")
-                    except Exception as e:
-                        logger.error(f"WebSocket: Erro ao enviar atualização para search_id={search_id}: {str(e)}")
-                
-                # Verificar se a busca terminou
-                if search.status in ["completed", "failed"]:
-                    logger.info(f"WebSocket: Busca finalizada para search_id={search_id}, status={search.status}")
-                    break
-                
-                await asyncio.sleep(1)
-                
-            except WebSocketDisconnect:
-                logger.info(f"WebSocket: Cliente desconectado durante monitoramento para search_id={search_id}")
-                break
-            except Exception as e:
-                logger.error(f"WebSocket: Erro durante monitoramento para search_id={search_id}: {str(e)}")
-                break
         
-        # Fechar a conexão normalmente
-        logger.info(f"WebSocket: Fechando conexão normalmente para search_id={search_id}")
-        await websocket.close(code=1000)
+        # Iniciar heartbeat em segundo plano
+        heartbeat_task = asyncio.create_task(send_heartbeat())
         
-    except WebSocketDisconnect:
-        logger.info(f"WebSocket: Cliente desconectado para search_id={search_id}")
-    except Exception as e:
-        logger.error(f"WebSocket: Erro durante monitoramento para search_id={search_id}: {str(e)}")
+        # Loop principal para receber mensagens
         try:
-            await websocket.close(code=1011)  # Erro interno
-        except:
-            pass
-    finally:
-        if heartbeat_task and not heartbeat_task.done():
+            while True:
+                data = await websocket.receive_json()
+                if "type" in data:
+                    if data["type"] == "acknowledge":
+                        logger.info(f"Cliente {client_id} confirmou: {data.get('message', '')}")
+                    elif data["type"] == "close":
+                        logger.info(f"Cliente {client_id} solicitou fechamento da conexão")
+                        break
+        except WebSocketDisconnect:
+            logger.info(f"Cliente {client_id} desconectado")
+        finally:
+            # Cancelar task de heartbeat
             heartbeat_task.cancel()
             try:
                 await heartbeat_task
             except asyncio.CancelledError:
                 pass
-        logger.info(f"WebSocket: Conexão finalizada para search_id={search_id}")
-
-async def send_heartbeat(websocket: WebSocket):
-    """Envia heartbeat para manter a conexão WebSocket ativa."""
-    try:
-        while True:
-            await asyncio.sleep(30)
-            try:
-                if websocket.client_state.CONNECTED:
-                    await websocket.send_text(json.dumps({"type": "heartbeat"}))
-                    logger.debug("WebSocket: Heartbeat enviado")
-            except WebSocketDisconnect:
-                logger.info("WebSocket: Cliente desconectado durante heartbeat")
-                break
-            except Exception as e:
-                logger.error(f"WebSocket: Erro ao enviar heartbeat: {str(e)}")
-                break
-    except asyncio.CancelledError:
-        logger.info("WebSocket: Heartbeat cancelado")
-        pass
+            
+            # Desconectar cliente
+            await websocket_manager.disconnect(client_id)
+    
     except Exception as e:
-        logger.error(f"WebSocket: Erro no heartbeat: {str(e)}") 
+        logger.error(f"Erro no endpoint WebSocket: {e}")
+        # Garantir que o cliente seja desconectado em caso de erro
+        await websocket_manager.disconnect(client_id)
+
+@router.websocket("/test_ws")
+async def test_websocket(websocket: WebSocket):
+    """Endpoint WebSocket de teste - sem autenticação ou dependências"""
+    client_id = str(uuid.uuid4())
+    logger.info(f"Nova conexão WebSocket de TESTE - Cliente {client_id}")
+    logger.info(f"Headers recebidos: {websocket.headers}")
+    
+    try:
+        # Aceitar conexão sem verificação
+        await websocket.accept()
+        logger.info(f"Conexão de teste aceita para cliente {client_id}")
+        
+        try:
+            # Enviar mensagem de teste
+            await websocket.send_json({
+                "type": "test",
+                "message": "Conexão de teste bem-sucedida!",
+                "client_id": client_id
+            })
+            logger.info(f"Mensagem de teste enviada para cliente {client_id}")
+            
+            # Aguardar mensagem de confirmação
+            try:
+                data = await asyncio.wait_for(websocket.receive_json(), timeout=30.0)
+                logger.info(f"Mensagem recebida do cliente {client_id}: {data}")
+                
+                # Enviar resposta
+                await websocket.send_json({
+                    "type": "response",
+                    "message": "Mensagem recebida com sucesso!"
+                })
+                
+            except Exception as e:
+                logger.error(f"Erro ao receber mensagem do cliente {client_id}: {str(e)}")
+            
+            # Manter conexão por 10 segundos
+            await asyncio.sleep(10)
+            
+        except Exception as e:
+            logger.error(f"Erro no WebSocket de teste: {str(e)}")
+        finally:
+            try:
+                await websocket.close()
+                logger.info(f"Conexão de teste fechada para cliente {client_id}")
+            except:
+                pass
+    except Exception as e:
+        logger.error(f"Erro ao aceitar conexão WebSocket de teste: {str(e)}")
+        try:
+            await websocket.close(code=1011)
+            logger.info(f"Conexão fechada após erro: {str(e)}")
+        except:
+            pass 

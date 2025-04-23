@@ -4,6 +4,8 @@ from typing import List, Dict, Any, Optional
 import asyncio
 import json
 from datetime import datetime
+import uuid
+import logging
 
 from microdetect.core.config import Settings
 from microdetect.database.database import get_db
@@ -16,10 +18,12 @@ from microdetect.services.yolo_service import YOLOService
 from microdetect.services.resource_monitor import ResourceMonitor
 from microdetect.utils.serializers import build_response, build_error_response, serialize_to_dict, JSONEncoder
 from microdetect.services.training_service import TrainingService
+from microdetect.core.websocket_manager import WebSocketManager
 
 router = APIRouter()
 yolo_service = YOLOService()
 resource_monitor = ResourceMonitor()
+websocket_manager = WebSocketManager()
 
 # Armazenamento em memória para progresso de treinamento
 training_progress = {}
@@ -134,134 +138,87 @@ def get_training_report(session_id: int, db: Session = Depends(get_db)):
     response = TrainingReportResponse.from_orm(report)
     return build_response(response)
 
-@router.websocket("/ws/{session_id}")
-async def websocket_endpoint(
-    websocket: WebSocket,
-    session_id: int,
-    db: Session = Depends(get_db)
-):
-    """Websocket para monitoramento em tempo real de treinamento."""
-    await websocket.accept()
+@router.websocket("/training/ws/{session_id}")
+async def websocket_endpoint(websocket: WebSocket, session_id: str):
+    """Endpoint WebSocket para monitoramento de sessão de treinamento"""
+    client_id = str(uuid.uuid4())
+    
+    # Conectar cliente sem verificação de token
+    await websocket_manager.connect(client_id, websocket)
     
     try:
-        # Criar instância do serviço de treinamento
-        training_service = TrainingService()
-        
         # Verificar se a sessão existe
         session = db.query(TrainingSession).filter(TrainingSession.id == session_id).first()
         if not session:
-            error_json = json.dumps({"error": "Sessão de treinamento não encontrada"}, cls=JSONEncoder)
-            await websocket.send_text(error_json)
-            await websocket.close()
+            await websocket.send_json({
+                "error": "Sessão não encontrada",
+                "code": 4004
+            })
+            await websocket_manager.disconnect(client_id)
             return
         
-        # Configurar heartbeat
-        heartbeat_task = asyncio.create_task(send_heartbeat(websocket))
-        
-        # Obter dados de progresso em tempo real
-        progress_data = training_service.get_progress(session_id)
+        # Registrar cliente para receber atualizações da sessão
+        websocket_manager.register_client_for_session(client_id, session_id)
         
         # Enviar estado inicial
-        response = TrainingSessionResponse.from_orm(session)
-        initial_data = response.dict()
+        session_state = {
+            "id": session.id,
+            "status": session.status,
+            "created_at": session.created_at.isoformat() if session.created_at else None,
+            "updated_at": session.updated_at.isoformat() if session.updated_at else None,
+            "metadata": session.metadata,
+            "error": session.error,
+            "result": session.result,
+            "progress": session.progress
+        }
         
-        # Adicionar dados de progresso
-        initial_data.update({
-            "current_epoch": progress_data.get("current_epoch", 0),
-            "total_epochs": progress_data.get("total_epochs", session.hyperparameters.get("epochs", 100)),
-            "metrics": progress_data.get("metrics", {}),
-            "resources": progress_data.get("resources", {}),
-            "progress": progress_data
+        await websocket.send_json({
+            "type": "initial_state",
+            "data": session_state
         })
-
-        json_data = json.dumps(initial_data, cls=JSONEncoder)
-        await websocket.send_text(json_data)
         
-        # Monitorar progresso
-        last_update = None
-        last_metrics = None
-        last_resources = None
-        
-        while True:
-            try:
-                # Obter dados de progresso atualizados
-                progress_data = training_service.get_progress(session_id)
-                
-                # Verificar se houve mudanças significativas
-                current_metrics = progress_data.get("metrics", {})
-                current_resources = progress_data.get("resources", {})
-                
-                should_update = (
-                    last_update != progress_data or
-                    last_metrics != current_metrics or
-                    last_resources != current_resources
-                )
-                
-                if should_update:
-                    last_update = progress_data.copy()
-                    last_metrics = current_metrics.copy()
-                    last_resources = current_resources.copy()
-                    
-                    # Atualizar dados da sessão
-                    db.refresh(session)
-                    
-                    # Criar resposta atualizada
-                    response = TrainingSessionResponse.from_orm(session)
-                    update_data = response.dict()
-                    
-                    # Adicionar dados de progresso
-                    update_data.update({
-                        "current_epoch": progress_data.get("current_epoch", 0),
-                        "total_epochs": progress_data.get("total_epochs", session.hyperparameters.get("epochs", 100)),
-                        "metrics": current_metrics,
-                        "resources": current_resources,
-                        "progress": progress_data
-                    })
-                    
-                    json_data = json.dumps(update_data, cls=JSONEncoder)
-                    await websocket.send_text(json_data)
-                
-                # Verificar se o treinamento terminou
-                if progress_data.get("status") in ["completed", "failed"] or session.status in [TrainingStatus.COMPLETED, TrainingStatus.FAILED]:
-                    # Enviar relatório final se existir
-                    report = db.query(TrainingReport).filter(TrainingReport.training_session_id == session_id).first()
-                    if report:
-                        response = TrainingReportResponse.from_orm(report)
-                        json_data = json.dumps({
-                            "type": "final_report",
-                            "data": response.dict(),
-                            "status": session.status
-                        }, cls=JSONEncoder)
-                        await websocket.send_text(json_data)
+        # Função de heartbeat
+        async def send_heartbeat():
+            while True:
+                try:
+                    if not websocket_manager.active_connections.get(client_id):
+                        break
+                    await websocket.send_json({"type": "heartbeat", "time": str(datetime.now())})
+                    await asyncio.sleep(30)  # Enviar heartbeat a cada 30 segundos
+                except Exception as e:
+                    logger.error(f"Erro no heartbeat: {e}")
                     break
-                
-                # Aguardar próxima atualização (intervalo menor para mais realtime)
-                await asyncio.sleep(0.1)  # 100ms entre atualizações
-                
-            except Exception as e:
-                logger.error(f"Erro durante monitoramento: {str(e)}")
-                error_json = json.dumps({"error": str(e)}, cls=JSONEncoder)
-                await websocket.send_text(error_json)
-                break
-    
-    except WebSocketDisconnect:
-        logger.info(f"Cliente desconectou do websocket de treinamento {session_id}")
-    except Exception as e:
-        logger.error(f"Erro no websocket de treinamento: {str(e)}")
+        
+        # Iniciar heartbeat em segundo plano
+        heartbeat_task = asyncio.create_task(send_heartbeat())
+        
+        # Loop principal para receber mensagens
         try:
-            error_json = json.dumps({"error": str(e)}, cls=JSONEncoder)
-            await websocket.send_text(error_json)
-        except:
-            pass
-    finally:
-        # Cancelar heartbeat
-        if 'heartbeat_task' in locals():
+            while True:
+                data = await websocket.receive_json()
+                if "type" in data:
+                    if data["type"] == "acknowledge":
+                        logger.info(f"Cliente {client_id} confirmou: {data.get('message', '')}")
+                    elif data["type"] == "close":
+                        logger.info(f"Cliente {client_id} solicitou fechamento da conexão")
+                        break
+        except WebSocketDisconnect:
+            logger.info(f"Cliente {client_id} desconectado")
+        finally:
+            # Cancelar task de heartbeat
             heartbeat_task.cancel()
-        # Garantir que o websocket seja fechado
-        try:
-            await websocket.close()
-        except:
-            pass
+            try:
+                await heartbeat_task
+            except asyncio.CancelledError:
+                pass
+            
+            # Desconectar cliente
+            await websocket_manager.disconnect(client_id)
+    
+    except Exception as e:
+        logger.error(f"Erro no endpoint WebSocket: {e}")
+        # Garantir que o cliente seja desconectado em caso de erro
+        await websocket_manager.disconnect(client_id)
 
 async def send_heartbeat(websocket: WebSocket):
     """Envia heartbeat para manter a conexão viva."""
