@@ -195,6 +195,10 @@ class TrainingService:
         Monitora o progresso do treinamento e envia atualizações via WebSocket.
         """
         try:
+            last_epoch = -1  # Para controlar qual foi a última época reportada
+            
+            logger.info(f"Iniciando monitoramento do treinamento {session_id}, task_id={task_id}")
+            
             while True:
                 # Obter status da task
                 from microdetect.tasks.training_tasks import train_model
@@ -204,6 +208,7 @@ class TrainingService:
                     # Treinamento concluído
                     if task.successful():
                         result = task.get()
+                        logger.info(f"Treinamento {session_id} concluído com sucesso: {result}")
                         await self.websocket_manager.broadcast_json(
                             f"training_{session_id}",
                             {
@@ -214,6 +219,7 @@ class TrainingService:
                         )
                     else:
                         error = str(task.result)
+                        logger.error(f"Erro no treinamento {session_id}: {error}")
                         await self.websocket_manager.broadcast_json(
                             f"training_{session_id}",
                             {
@@ -227,17 +233,57 @@ class TrainingService:
                 # Obter progresso atual
                 session = await self.get_training_session(session_id)
                 if session.metrics:
-                    await self.websocket_manager.broadcast_json(
-                        f"training_{session_id}",
-                        {
-                            "status": "training",
-                            "metrics": session.metrics,
-                            "current_epoch": session.metrics.get("epoch", 0),
-                            "total_epochs": session.hyperparameters.get("epochs", 100)
-                        }
-                    )
+                    current_epoch = session.metrics.get("epoch", 0)
+                    progress_type = session.metrics.get("progress_type", "")
+                    total_epochs = session.hyperparameters.get("epochs", 100)
+                    
+                    logger.debug(f"Dados de progresso: epoch={current_epoch}, tipo={progress_type}, total_epochs={total_epochs}")
+                    
+                    # Verificar se temos uma nova época para reportar
+                    # Enviar atualizações quando: uma nova época foi concluída OU já passou tempo suficiente
+                    if current_epoch > last_epoch or (progress_type == "batch" and current_epoch > 0):
+                        if current_epoch > last_epoch:
+                            last_epoch = current_epoch
+                            logger.info(f"Nova época concluída: {current_epoch}/{total_epochs}")
+                        
+                        # Debug valores brutos
+                        logger.info(f"Valores brutos: current_epoch={current_epoch}, total_epochs={total_epochs}")
+                        
+                        # Calcular porcentagem de progresso de forma similar à busca de hiperparâmetros
+                        epoch_percent = (current_epoch / max(1, total_epochs)) * 100
+                        
+                        # Converter para inteiro mantendo arredondamento correto
+                        percent_complete = int(round(epoch_percent))
+                        
+                        # Garantir que seja pelo menos 1 se estiver em andamento
+                        if percent_complete < 1 and current_epoch > 0:
+                            percent_complete = 1
+                            
+                        # Garantir limites
+                        percent_complete = max(0, min(100, percent_complete))
+                        
+                        logger.info(f"Cálculo detalhado: epoch_percent={epoch_percent:.2f}%, final={percent_complete}%")
+                        
+                        # Enviar atualização detalhada via WebSocket
+                        await self.websocket_manager.broadcast_json(
+                            f"training_{session_id}",
+                            {
+                                "status": "training",
+                                "metrics": session.metrics,
+                                "current_epoch": current_epoch,
+                                "total_epochs": total_epochs,
+                                "progress": {
+                                    "current_epoch": current_epoch,
+                                    "total_epochs": total_epochs,
+                                    "percent_complete": percent_complete,
+                                    "progress_type": progress_type
+                                }
+                            }
+                        )
+                        logger.info(f"Atualização via WebSocket enviada para o treinamento {session_id}")
                 
-                await asyncio.sleep(1)  # Atualizar a cada segundo
+                # Verificar atualizações com mais frequência (mesmo intervalo da busca de hiperparâmetros)
+                await asyncio.sleep(0.1)  # Atualizar 10 vezes por segundo
                 
         except Exception as e:
             logger.error(f"Erro ao monitorar progresso do treinamento: {e}")
