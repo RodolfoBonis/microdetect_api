@@ -5,11 +5,15 @@ from typing import List, Optional
 import yaml
 from sqlalchemy.orm import Session
 
-from microdetect.core.config import Settings
+from microdetect.core.config import settings
 from microdetect.models.annotation import Annotation
 from microdetect.models.dataset import Dataset
+from microdetect.models.image import Image
+from microdetect.models.dataset_image import DatasetImage
 from microdetect.schemas.dataset import DatasetCreate, DatasetUpdate
+import logging
 
+logger = logging.getLogger(__name__)
 
 class DatasetService:
     def __init__(self, db: Session):
@@ -82,8 +86,10 @@ class DatasetService:
             raise ValueError(f"Dataset {dataset_id} não encontrado")
         
         # Diretório base para o dataset
-        dataset_dir = Path(f"{Settings.TRAINING_DIR}/{dataset.name}")
+        dataset_dir = Path(settings.TRAINING_DIR) / dataset.name
         dataset_dir.mkdir(parents=True, exist_ok=True)
+        
+        logger.info(f"Preparando dataset {dataset.name} para treinamento em {dataset_dir}")
         
         # Criar subdiretórios
         train_dir = dataset_dir / "train"
@@ -103,8 +109,18 @@ class DatasetService:
                           test_images_dir, test_labels_dir]:
             dir_path.mkdir(parents=True, exist_ok=True)
         
-        # Obter todas as imagens e anotações do dataset
-        images = dataset.associated_images
+        # Obter todas as imagens do dataset usando a tabela intermediária dataset_images
+        images = (
+            self.db.query(Image)
+            .join(DatasetImage, DatasetImage.image_id == Image.id)
+            .filter(DatasetImage.dataset_id == dataset_id)
+            .all()
+        )
+        
+        if not images:
+            raise ValueError(f"Dataset {dataset_id} não possui imagens")
+            
+        logger.info(f"Processando {len(images)} imagens do dataset {dataset.name}")
         
         # Dividir imagens em treino (70%), validação (20%) e teste (10%)
         total_images = len(images)
@@ -114,6 +130,8 @@ class DatasetService:
         train_images = images[:train_count]
         val_images = images[train_count:train_count + val_count]
         test_images = images[train_count + val_count:]
+        
+        logger.info(f"Distribuição das imagens: {len(train_images)} treino, {len(val_images)} validação, {len(test_images)} teste")
         
         # Processar imagens e anotações para cada conjunto
         self._process_images_and_annotations(train_images, train_images_dir, train_labels_dir, dataset_id, dataset.classes)
@@ -134,6 +152,8 @@ class DatasetService:
         with open(data_yaml_path, 'w') as f:
             yaml.dump(data_yaml_content, f, default_flow_style=False)
         
+        logger.info(f"Dataset preparado com sucesso. Arquivo data.yaml criado em {data_yaml_path}")
+        
         return str(data_yaml_path)
     
     def _process_images_and_annotations(self, images, images_dir, labels_dir, dataset_id, classes):
@@ -151,6 +171,7 @@ class DatasetService:
             # Copiar imagem para o diretório de destino
             src_image_path = Path(image.file_path)
             if not src_image_path.exists():
+                logger.warning(f"Imagem não encontrada: {src_image_path}")
                 continue
                 
             dst_image_path = images_dir / src_image_path.name
@@ -163,6 +184,7 @@ class DatasetService:
             ).all()
             
             if not annotations:
+                logger.warning(f"Imagem {image.id} não possui anotações")
                 continue
                 
             # Nome do arquivo de anotação (mesmo nome da imagem, mas com extensão .txt)
@@ -172,16 +194,29 @@ class DatasetService:
             # Converter e salvar anotações no formato YOLO
             with open(label_path, 'w') as f:
                 for annotation in annotations:
-                    # Formato YOLO: class_id x_center y_center width height
-                    # Todos os valores são normalizados (0-1)
-                    class_id = classes.index(annotation.class_name)
+                    try:
+                        # Formato YOLO: class_id x_center y_center width height
+                        # Todos os valores são normalizados (0-1)
+                        class_id = classes.index(annotation.class_name)
+                        
+                        # Verificar se a imagem tem dimensões
+                        if not image.width or not image.height:
+                            logger.warning(f"Imagem {image.id} não tem dimensões definidas")
+                            continue
 
-                    # IMPORTANTE: Converter as coordenadas do canto superior esquerdo (x,y)
-                    # para coordenadas do centro (x_center, y_center) conforme requerido pelo YOLO
-                    x_center = annotation.x + (annotation.width / 2)
-                    y_center = annotation.y + (annotation.height / 2)
-                    width = annotation.width
-                    height = annotation.height
+                        # Converter coordenadas para o formato YOLO (normalizadas)
+                        x_center = (annotation.x + (annotation.width / 2)) / image.width
+                        y_center = (annotation.y + (annotation.height / 2)) / image.height
+                        width = annotation.width / image.width
+                        height = annotation.height / image.height
 
-                    # Escrever no arquivo
-                    f.write(f"{class_id} {x_center} {y_center} {width} {height}\n")
+                        # Verificar se os valores estão dentro do intervalo [0,1]
+                        if not all(0 <= v <= 1 for v in [x_center, y_center, width, height]):
+                            logger.warning(f"Anotação {annotation.id} tem coordenadas fora do intervalo [0,1]")
+                            continue
+
+                        # Escrever no arquivo
+                        f.write(f"{class_id} {x_center:.6f} {y_center:.6f} {width:.6f} {height:.6f}\n")
+                    except Exception as e:
+                        logger.error(f"Erro ao processar anotação {annotation.id}: {str(e)}")
+                        continue

@@ -6,7 +6,7 @@ import os
 import uvicorn
 import logging
 from pathlib import Path
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
