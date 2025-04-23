@@ -1,10 +1,25 @@
 from celery import Celery
 from microdetect.core.config import settings
+import platform
+import os
+import multiprocessing
+
+# Importar a configuração MPS antes de qualquer outro módulo PyTorch
+from microdetect.core.mps_config import configure_mps, is_mps_available, get_device
+
+# Configurar método de inicialização de processos correto para MacOS
+if platform.system() == "Darwin":
+    try:
+        multiprocessing.set_start_method('spawn', force=True)
+        os.environ["PYTHONFAULTHANDLER"] = "1"  # Para debug
+    except RuntimeError:
+        # Já foi configurado, ignorar
+        pass
 
 # Configurar Celery
 celery_app = Celery(
     'microdetect',
-    broker='amqp://microdetect:microdetect123@localhost:5672//',  # RabbitMQ como broker
+    broker='redis://localhost:6379/0',  # Redis como broker
     backend='redis://localhost:6379/0',  # Redis como backend
     include=[
         'microdetect.tasks.training_tasks',
@@ -30,6 +45,12 @@ celery_app.conf.update(
         'microdetect.tasks.hyperparam_tasks.*': {'queue': 'hyperparam'}
     }
 )
+
+# Configurar processamento para MacOS
+if platform.system() == "Darwin":
+    celery_app.conf.update(
+        worker_pool='solo',  # Usar processamento solo em vez de prefork no MacOS
+    )
 
 # Configurar logging
 celery_app.conf.update(

@@ -1,6 +1,8 @@
 import os
 import logging
 import torch
+import platform
+import math
 from ultralytics import YOLO
 from typing import List, Dict, Any, Tuple, Optional
 from pathlib import Path
@@ -10,19 +12,31 @@ from microdetect.models import Dataset
 from microdetect.models.model import Model
 from microdetect.services.dataset_service import DatasetService
 from microdetect.database.database import get_db
+from microdetect.core.mps_config import is_mps_available, get_device
 
-# Verificar se CUDA está disponível
+# Verificar disponibilidade de aceleração (CUDA ou MPS)
 CUDA_AVAILABLE = torch.cuda.is_available()
+MPS_AVAILABLE = is_mps_available()
 logger = logging.getLogger(__name__)
-logger.info(f"CUDA available in YOLOService: {CUDA_AVAILABLE}")
+logger.info(f"CUDA available: {CUDA_AVAILABLE}")
+logger.info(f"MPS available: {MPS_AVAILABLE}")
 
 class YOLOService:
     def __init__(self):
         self.models_dir = Path(settings.MODELS_DIR)
         self.models_dir.mkdir(parents=True, exist_ok=True)
         
-        self.device = "cuda:0" if settings.USE_CUDA else "cpu"
-        logger.info(f"CUDA available in YOLOService: {settings.USE_CUDA}")
+        # Determinar o dispositivo a ser usado
+        if settings.FORCE_CPU:
+            self.device = "cpu"
+        elif CUDA_AVAILABLE and settings.USE_CUDA:
+            self.device = "cuda:0"
+        elif MPS_AVAILABLE and settings.USE_MPS and platform.system() == "Darwin":
+            self.device = "mps"
+        else:
+            self.device = "cpu"
+            
+        logger.info(f"YOLOService usando dispositivo: {self.device}")
         
         # Carregar modelo padrão se existir
         self.model = None
@@ -166,7 +180,31 @@ class YOLOService:
                 # Verificar e converter parâmetros incompatíveis
                 if "batch_size" in hyperparameters:
                     hyperparameters["batch"] = hyperparameters.pop("batch_size")
-                    
+                
+                # Converter learning_rate para lr0 (nome correto para YOLO)
+                if "learning_rate" in hyperparameters:
+                    value = hyperparameters.pop("learning_rate")
+                    # Se for um dicionário com min/max, usar um valor médio
+                    if isinstance(value, dict) and "min" in value and "max" in value:
+                        hyperparameters["lr0"] = (value["min"] + value["max"]) / 2
+                    else:
+                        hyperparameters["lr0"] = value
+                
+                # Processar outros parâmetros que podem vir como min/max
+                for param in ["epochs", "batch"]:
+                    if param in hyperparameters and isinstance(hyperparameters[param], dict):
+                        if "min" in hyperparameters[param] and "max" in hyperparameters[param]:
+                            # Para inteiros, pegar um valor médio arredondado
+                            if param == "epochs":
+                                min_val = hyperparameters[param]["min"]
+                                max_val = hyperparameters[param]["max"]
+                                hyperparameters[param] = round((min_val + max_val) / 2)
+                            elif param == "batch":
+                                min_val = hyperparameters[param]["min"]
+                                max_val = hyperparameters[param]["max"]
+                                # Prefira potências de 2 para batch
+                                hyperparameters[param] = 2 ** round(math.log2((min_val + max_val) / 2))
+                
                 # Verificar o parâmetro epochs explicitamente
                 if "epochs" in hyperparameters:
                     try:
@@ -201,9 +239,64 @@ class YOLOService:
                     def __init__(self):
                         self.current_epoch = 0
                         self.total_epochs = params["epochs"]
+                        self.last_update_time = 0
+                        self.update_interval = 0.1  # Reduzir para 0.1 segundos para atualizações mais frequentes
+
+                    def on_train_batch_end(self, trainer):
+                        """Callback chamado após cada batch de treinamento - utilizado para atualizações frequentes"""
+                        import time
+                        current_time = time.time()
+                        
+                        # Log para depuração
+                        logger.debug(f"on_train_batch_end chamado: epoch={trainer.epoch}")
+                        
+                        # Limitar a frequência de atualizações para não sobrecarregar
+                        if current_time - self.last_update_time < self.update_interval:
+                            return
+                            
+                        # Atualizar timestamp
+                        self.last_update_time = current_time
+                        
+                        # Extrair métricas básicas do batch atual
+                        # Obter informações seguras do trainer
+                        batch_info = {}
+                        # Tentar obter informações do batch de diferentes formas
+                        if hasattr(trainer, 'batch_idx'):
+                            batch_info["current_batch"] = trainer.batch_idx
+                        elif hasattr(trainer, 'step'):
+                            batch_info["current_batch"] = trainer.step
+                        
+                        if hasattr(trainer, 'num_batches'):
+                            batch_info["total_batches"] = trainer.num_batches
+                        elif hasattr(trainer, 'dataloader'):
+                            batch_info["total_batches"] = len(trainer.dataloader)
+                            
+                        current_metrics = {
+                            "epoch": trainer.epoch,
+                            "batch_size": getattr(trainer, 'batch_size', 0),
+                            "total_epochs": trainer.epochs,
+                            "loss": float(trainer.loss.detach().cpu().numpy() if hasattr(trainer, 'loss') else 0.0),
+                            "progress_type": "batch",  # Indicar que é uma atualização de batch
+                            **batch_info  # Incluir informações do batch obtidas dinamicamente
+                        }
+                        
+                        # Log antes de chamar o callback
+                        logger.info(f"Enviando atualização de batch: epoch={trainer.epoch}, batch={batch_info.get('current_batch', 'N/A')}")
+                        
+                        # Chamar o callback com as métricas básicas
+                        callback(current_metrics)
                     
                     def on_train_epoch_end(self, trainer):
-                        # Extrair métricas da época atual
+                        """Callback chamado após cada época de treinamento - utilizado para métricas completas"""
+                        # Log para depuração
+                        logger.info(f"on_train_epoch_end chamado: epoch={trainer.epoch}")
+                        
+                        # Calcular ETA com segurança
+                        eta_seconds = 0
+                        if hasattr(trainer, 'epoch_time') and trainer.epoch_time is not None and hasattr(trainer.epoch_time, 'avg'):
+                            eta_seconds = trainer.epoch_time.avg * (trainer.epochs - trainer.epoch)
+                        
+                        # Extrair métricas da época atual com dados de validação
                         current_metrics = {
                             "epoch": trainer.epoch,
                             "total_epochs": trainer.epochs,
@@ -213,15 +306,20 @@ class YOLOService:
                             "precision": float(trainer.metrics.get("metrics/precision(B)", 0.0)),
                             "recall": float(trainer.metrics.get("metrics/recall(B)", 0.0)),
                             "val_loss": float(trainer.metrics.get("val/box_loss", 0.0)),
-                            "eta_seconds": trainer.epoch_time.avg * (trainer.epochs - trainer.epoch)
+                            "eta_seconds": eta_seconds,
+                            "progress_type": "epoch"  # Indicar que é uma atualização de época completa
                         }
                         
-                        # Chamar o callback com as métricas
-                        if callback:
-                            callback(current_metrics)
+                        # Log antes de chamar o callback
+                        logger.info(f"Enviando atualização de época completa: epoch={trainer.epoch}/{trainer.epochs}")
+                        
+                        # Forçar a chamada do callback para garantir que cada época seja reportada
+                        self.last_update_time = 0  # Reset do tempo para garantir atualização
+                        callback(current_metrics)
                 
-                # Registrar o callback
+                # Registrar os callbacks
                 progress_callback = ProgressCallback()
+                model.add_callback("on_train_batch_end", progress_callback.on_train_batch_end)
                 model.add_callback("on_train_epoch_end", progress_callback.on_train_epoch_end)
             
             # Registrar os parâmetros finais para debug
@@ -234,16 +332,39 @@ class YOLOService:
             )
             
             # Extrair métricas
-            metrics = {
-                "epochs": results.results_dict["epochs"],
-                "best_epoch": results.results_dict["best_epoch"],
-                "best_map50": results.results_dict["best_map50"],
-                "best_map": results.results_dict["best_map"],
-                "final_map50": results.results_dict["final_map50"],
-                "final_map": results.results_dict["final_map"],
-                "train_time": results.results_dict["train_time"],
-                "val_time": results.results_dict["val_time"],
-            }
+            metrics = {}
+            
+            # Verificar se results_dict existe e extrair métricas com segurança
+            if hasattr(results, 'results_dict'):
+                results_dict = results.results_dict
+                
+                # Extrair métricas seguramente, com valores padrão se não existirem
+                metrics = {
+                    "epochs": results_dict.get("epochs", params.get("epochs", 0)),
+                    "best_epoch": results_dict.get("best_epoch", 0),
+                    "best_map50": results_dict.get("best_map50", 0.0),
+                    "best_map": results_dict.get("best_map", 0.0),
+                    "final_map50": results_dict.get("final_map50", 0.0),
+                    "final_map": results_dict.get("final_map", 0.0),
+                    "train_time": results_dict.get("train_time", 0.0),
+                    "val_time": results_dict.get("val_time", 0.0),
+                }
+            else:
+                # Se results_dict não existir, usar valores padrão
+                logger.warning("Objeto results não contém results_dict. Usando valores padrão para métricas.")
+                metrics = {
+                    "epochs": params.get("epochs", 0),
+                    "best_epoch": 0,
+                    "best_map50": 0.0, 
+                    "best_map": 0.0,
+                    "final_map50": 0.0,
+                    "final_map": 0.0,
+                    "train_time": 0.0,
+                    "val_time": 0.0,
+                }
+            
+            # Registrar métricas obtidas
+            logger.info(f"Métricas de treinamento obtidas: {metrics}")
             
             return metrics
             

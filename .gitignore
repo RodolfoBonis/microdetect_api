@@ -69,3 +69,10 @@ build/
 
 # macOS
 .DS_Store
+
+# Test images
+test_images/
+
+# models
+*.pt
+

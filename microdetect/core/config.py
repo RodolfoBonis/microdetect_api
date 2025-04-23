@@ -5,6 +5,7 @@ import dotenv
 from dataclasses import dataclass, field
 from pydantic_settings import BaseSettings
 import logging
+import platform
 
 logger = logging.getLogger(__name__)
 
@@ -40,12 +41,17 @@ class Settings(BaseSettings):
     
     # CUDA/GPU
     USE_CUDA: bool = False  # Será atualizado automaticamente na inicialização
+    USE_MPS: bool = False   # Para Metal Performance Shaders no MacOS
     CUDA_DEVICE: str = "cuda:0"
+    MPS_DEVICE: str = "mps"  # Dispositivo para MacOS
     FORCE_CPU: bool = False  # Se True, força o uso de CPU mesmo com GPU disponível
     
     # Celery
-    CELERY_BROKER_URL: str = "amqp://microdetect:microdetect123@localhost:5672//"
+    CELERY_BROKER_URL: str = "redis://localhost:6379/0"
     CELERY_RESULT_BACKEND: str = "redis://localhost:6379/0"
+    # Configurar o método de inicialização de processos para o Celery
+    # 'spawn' é mais seguro no MacOS com MPS do que 'fork'
+    MULTIPROCESSING_START_METHOD: str = "spawn" if platform.system() == "Darwin" else "fork" 
     
     # Treinamento
     DEFAULT_MODEL_TYPE: str = "yolov8"
@@ -180,9 +186,30 @@ def model_post_init(self, *args, **kwargs):
     self.update_cuda_status()
 
 def update_cuda_status(self):
-    """Atualiza o status do CUDA."""
+    """Atualiza o status do CUDA/MPS."""
     try:
         import torch
         self.USE_CUDA = torch.cuda.is_available() and not self.FORCE_CPU
+        
+        # Verificar suporte a MPS (Metal Performance Shaders) no MacOS
+        if platform.system() == "Darwin" and not self.FORCE_CPU:
+            self.USE_MPS = hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
+            if self.USE_MPS:
+                logger.info("Metal Performance Shaders (MPS) está disponível no MacOS")
+        else:
+            self.USE_MPS = False
+                
     except ImportError:
         self.USE_CUDA = False
+        self.USE_MPS = False
+        
+    def get_device(self):
+        """Retorna o dispositivo apropriado (cuda, mps, cpu)"""
+        if self.FORCE_CPU:
+            return "cpu"
+        elif self.USE_CUDA:
+            return self.CUDA_DEVICE
+        elif self.USE_MPS:
+            return self.MPS_DEVICE
+        else:
+            return "cpu"

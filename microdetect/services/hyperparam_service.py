@@ -1,25 +1,17 @@
-import os
-import json
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 from microdetect.core.config import settings
-from microdetect.models.training_session import TrainingSession
 from microdetect.models.hyperparam_search import HyperparamSearch
 from microdetect.models.dataset import Dataset
 from microdetect.services.yolo_service import YOLOService
 from sqlalchemy.orm import Session
 from microdetect.database.database import get_db
-import shutil
 import asyncio
 import logging
-import torch
-from microdetect.core.websocket_manager import WebSocketManager
+from microdetect.core.websocket_utils import send_hyperparam_update
 from microdetect.core.hyperparam_core import (
-    prepare_hyperparam_directory,
-    prepare_hyperparam_config,
-    update_hyperparam_status,
-    HyperparameterOptimizer
+    prepare_hyperparam_directory
 )
 from microdetect.tasks.hyperparam_tasks import run_hyperparameter_search
 
@@ -35,7 +27,6 @@ class HyperparamService:
 
         self.yolo_service = YOLOService()
         self._db = next(get_db())
-        self.websocket_manager = WebSocketManager()
 
     async def create_hyperparam_session(
         self,
@@ -80,41 +71,192 @@ class HyperparamService:
 
     async def start_hyperparam_search(self, search_id: int) -> HyperparamSearch:
         """
-        Inicia a busca de hiperparâmetros usando Celery.
+        Inicia uma busca de hiperparâmetros usando Celery.
+        
+        Args:
+            search_id: ID da busca de hiperparâmetros
+            
+        Returns:
+            Objeto HyperparamSearch atualizado
         """
+        # Obter busca
         search = self._db.query(HyperparamSearch).get(search_id)
         if not search:
-            raise ValueError(f"Busca {search_id} não encontrada")
-        
+            raise ValueError(f"Busca de hiperparâmetros {search_id} não encontrada")
+            
         # Atualizar status
         search.status = "running"
         search.started_at = datetime.utcnow()
         self._db.commit()
         
-        # Iniciar task Celery
-        task = run_hyperparameter_search.delay(search_id)
+        # Obter dataset para preparar data_yaml
+        dataset = self._db.query(Dataset).get(search.dataset_id)
+        if not dataset:
+            raise ValueError(f"Dataset {search.dataset_id} não encontrado")
+        
+        # Extrair informações do modelo a partir do search_space ou usar valores padrão
+        model_type = "yolov8"  # Valor padrão
+        model_version = "n"    # Valor padrão
+        
+        # Extrair parâmetros e configurações
+        param_space = search.search_space or {}
+        n_trials = search.iterations or 10
+        search_algorithm = "random"  # Valor padrão
+        objective_metric = "map"    # Valor padrão
+        
+        # Iniciar tarefa Celery com todos os parâmetros necessários
+        task = run_hyperparameter_search.delay(
+            search_id=search_id,
+            dataset_id=search.dataset_id,
+            param_space=param_space,
+            model_type=model_type,
+            model_version=model_version,
+            n_trials=n_trials,
+            search_algorithm=search_algorithm,
+            objective_metric=objective_metric
+        )
         
         # Iniciar monitoramento via WebSocket
         asyncio.create_task(self._monitor_search_progress(search_id, task.id))
         
         return search
-
+    
     async def _monitor_search_progress(self, search_id: int, task_id: str):
         """
         Monitora o progresso da busca de hiperparâmetros.
         """
         try:
+            last_iteration = -1
+            last_reported_epoch = -1
+            
+            logger.info(f"Iniciando monitoramento da busca {search_id}, task_id={task_id}")
+            
             while True:
                 # Obter status da task
                 task = run_hyperparameter_search.AsyncResult(task_id)
                 
-                if task.ready():
+                # Obter dados atualizados da busca
+                search = self._db.query(HyperparamSearch).get(search_id)
+                if not search:
+                    logger.error(f"Busca {search_id} não encontrada")
                     break
                 
-                await asyncio.sleep(1)
+                # Obter progresso atual
+                progress = self.get_progress(search_id)
+                current_trial = len(search.trials_data or [])
+                
+                # Log de status da tarefa
+                if task.state != 'PENDING':
+                    logger.debug(f"Task state: {task.state}, info: {task.info}")
+                
+                # Verificar se houve mudança no trial atual
+                if current_trial > last_iteration:
+                    last_iteration = current_trial
+                    last_reported_epoch = -1  # Reset do controle de épocas ao começar um novo trial
+                    logger.info(f"Novo trial iniciado: {current_trial}/{search.iterations}")
+                
+                # Verificar progresso da época dentro do trial atual
+                if task.info and isinstance(task.info, dict):
+                    # Extrair informações de época do info da task
+                    current_epoch = task.info.get("epoch", 0)
+                    progress_type = task.info.get("progress_type", "")
+                    total_epochs = task.info.get("total_epochs", 100)
+                    logger.debug(f"Task info: epoch={current_epoch}, tipo={progress_type}")
+                    
+                    # Sempre enviar atualizações de época
+                    if progress_type == "epoch" or progress_type == "epoch_in_trial":
+                        last_reported_epoch = current_epoch
+                        logger.info(f"Trial {current_trial}: Progresso época: {current_epoch}, tipo={progress_type}")
+                        
+                        # Debug valores brutos
+                        logger.info(f"Valores brutos: current_trial={current_trial}, search.iterations={search.iterations}, current_epoch={current_epoch}, total_epochs={total_epochs}")
+                        
+                        # Nova fórmula simplificada para percent_complete
+                        # Garantir que current_trial seja pelo menos 1 para cálculos
+                        trial_idx = max(1, current_trial)  # Usar 1 para o primeiro trial
+                        
+                        # Calcular progresso baseado no índice do trial (1-based) e na proporção da época atual
+                        # Para 5 trials, cada um vale 20% do progresso
+                        trial_percent = (trial_idx - 1) * (100 / search.iterations)
+                        epoch_percent = (current_epoch / max(1, total_epochs)) * (100 / search.iterations)
+                        
+                        # Somar os dois componentes do progresso
+                        percent_complete = trial_percent + epoch_percent
+                        
+                        # Garantir que seja pelo menos 1 se estiver em andamento, para feedback visual
+                        if percent_complete < 1 and current_epoch > 0:
+                            percent_complete = 1
+                            
+                        # Converter para inteiro mantendo arredondamento correto
+                        percent_complete = int(round(percent_complete))
+                        
+                        # Garantir limites
+                        percent_complete = max(0, min(100, percent_complete))
+                        
+                        logger.info(f"Cálculo detalhado: trial_idx={trial_idx}, trial_percent={trial_percent:.2f}%, epoch_percent={epoch_percent:.2f}%, final={percent_complete}%")
+                        
+                        # Enviar atualização detalhada via WebSocket
+                        await send_hyperparam_update(
+                            str(search_id),
+                            {
+                                "status": search.status,
+                                "trials": search.trials_data or [],
+                                "best_params": search.best_params or {},
+                                "best_metrics": search.best_metrics or {},
+                                "current_trial": current_trial,
+                                "total_trials": search.iterations,
+                                "progress": {
+                                    "trial": current_trial,
+                                    "total_trials": search.iterations,
+                                    "current_epoch": current_epoch,
+                                    "total_epochs": total_epochs,
+                                    "percent_complete": percent_complete
+                                },
+                                "current_trial_info": task.info
+                            }
+                        )
+                        logger.info(f"Atualização via WebSocket enviada para a busca {search_id}")
+                
+                # Se a task terminou, verificar resultado
+                if task.ready():
+                    if task.successful():
+                        result = task.get()
+                        logger.info(f"Busca {search_id} concluída com sucesso: {result}")
+                        await send_hyperparam_update(
+                            str(search_id),
+                            {
+                                "status": "completed",
+                                "best_params": result.get("best_params", {}),
+                                "best_metrics": result.get("best_metrics", {}),
+                                "message": "Busca concluída com sucesso"
+                            }
+                        )
+                    else:
+                        error = str(task.result)
+                        logger.error(f"Erro na busca {search_id}: {error}")
+                        await send_hyperparam_update(
+                            str(search_id),
+                            {
+                                "status": "failed",
+                                "error": error,
+                                "message": "Erro durante a busca"
+                            }
+                        )
+                    break
+                
+                # Atualizar a cada 100ms para mais realtime
+                await asyncio.sleep(0.1)
                 
         except Exception as e:
             logger.error(f"Erro ao monitorar progresso: {str(e)}")
+            await send_hyperparam_update(
+                str(search_id),
+                {
+                    "status": "error",
+                    "error": str(e),
+                    "message": "Erro ao monitorar progresso"
+                }
+            )
 
     async def list_searches(
         self,
