@@ -329,7 +329,6 @@ class FullFlowTester:
         
         # Lista de endpoints para testar
         endpoints = [
-            f"{self.api_prefix}/hyperparams/test_ws",
             f"{self.api_prefix}/hyperparams/ws/1"
         ]
         
@@ -376,17 +375,18 @@ class FullFlowTester:
             
         data = {
             "dataset_id": self.dataset_id,
-            "model_type": "yolov8",
-            "model_version": "n",
             "name": f"Busca Teste {datetime.now().strftime('%Y%m%d_%H%M%S')}",
             "description": "Busca de hiperparâmetros para testes automatizados",
             "search_space": {
-                "learning_rate": {"min": 0.0001, "max": 0.01},
+                "model_type": "yolov8",
+                "model_size": ["n", "s", "m"],
+                "imgsz": [640, 1280],
+                "optimizer": ["Adam", "SGD"],
+                "device": "cpu",
+                "epochs": {"min": 10, "max": 50},
                 "batch_size": {"min": 8, "max": 32},
-                "epochs": {"min": 10, "max": 50}
-            },
-            "max_trials": 5,
-            "device": "cpu"  # Forçar uso de CPU em vez de GPU
+                "learning_rate": {"min": 0.0001, "max": 0.01}
+            }
         }
         
         try:
@@ -448,9 +448,14 @@ class FullFlowTester:
         """Retorna hiperparâmetros padrão para fallback"""
         logger.info("Usando hiperparâmetros padrão")
         return {
-            "lr0": 0.01,
-            "batch_size": 16,
-            "epochs": 20
+            "model_type": "yolov8",
+            "model_size": "n",
+            "imgsz": 640,
+            "optimizer": "Adam",
+            "device": "auto",
+            "epochs": 20,
+            "batch": 16,
+            "lr0": 0.01
         }
 
     async def train_model(self, hyperparameters):

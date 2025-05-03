@@ -41,8 +41,7 @@ async def create_hyperparam_search(
             model_version=search_data.get("model_version"),
             name=search_data.get("name"),
             description=search_data.get("description"),
-            search_space=search_data.get("search_space"),
-            max_trials=search_data.get("max_trials", 10)
+            search_space=search_data.get("search_space")
         )
         
         # Iniciar busca em background

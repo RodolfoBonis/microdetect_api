@@ -35,8 +35,7 @@ class HyperparamService:
         model_version: str,
         name: Optional[str] = None,
         description: Optional[str] = None,
-        search_space: Optional[Dict[str, Any]] = None,
-        max_trials: int = 10
+        search_space: Optional[Dict[str, Any]] = None
     ) -> HyperparamSearch:
         """
         Cria uma nova sessão de otimização de hiperparâmetros.
@@ -45,6 +44,54 @@ class HyperparamService:
         dataset = self._db.query(Dataset).get(dataset_id)
         if not dataset:
             raise ValueError(f"Dataset {dataset_id} não encontrado")
+        
+        # Validar search_space
+        if search_space:
+            # Validar model_type
+            if "model_type" in search_space:
+                if not isinstance(search_space["model_type"], str):
+                    raise ValueError("model_type deve ser uma string")
+                valid_types = ["yolov8", "yolov10"]  # Lista em lowercase para comparação
+                model_type = search_space["model_type"].lower()  # Converter para lowercase
+                if model_type not in valid_types:
+                    raise ValueError(f"Tipo de modelo inválido: {search_space['model_type']}. Deve ser um dos: {[t.upper() for t in valid_types]}")
+                # Atualizar o valor no search_space para o formato padrão
+                search_space["model_type"] = model_type
+            
+            # Validar model_size
+            if "model_size" in search_space:
+                if not isinstance(search_space["model_size"], list):
+                    raise ValueError("model_size deve ser um array de strings")
+                valid_sizes = ["n", "s", "m", "l", "x"]
+                for size in search_space["model_size"]:
+                    if size not in valid_sizes:
+                        raise ValueError(f"Tamanho de modelo inválido: {size}. Deve ser um dos: {valid_sizes}")
+            
+            # Validar imgsz
+            if "imgsz" in search_space:
+                if not isinstance(search_space["imgsz"], list):
+                    raise ValueError("imgsz deve ser um array de inteiros")
+                for size in search_space["imgsz"]:
+                    if not isinstance(size, int) or size < 32 or size > 2048:
+                        raise ValueError(f"Tamanho de imagem inválido: {size}. Deve ser um inteiro entre 32 e 2048")
+            
+            # Validar optimizer
+            if "optimizer" in search_space:
+                if not isinstance(search_space["optimizer"], list):
+                    raise ValueError("optimizer deve ser um array de strings")
+                valid_optimizers = ["Adam", "SGD", "AdamW", "RMSProp"]
+                for opt in search_space["optimizer"]:
+                    if opt not in valid_optimizers:
+                        raise ValueError(f"Otimizador inválido: {opt}. Deve ser um dos: {valid_optimizers}")
+            
+            # Validar device
+            if "device" in search_space:
+                device = search_space["device"]
+                if not isinstance(device, str):
+                    raise ValueError("device deve ser uma string")
+                valid_devices = ["auto", "cpu", "GPU0", "GPU1"]
+                if device not in valid_devices and not device.startswith("GPU"):
+                    raise ValueError(f"Dispositivo inválido: {device}. Deve ser um dos: {valid_devices} ou GPU seguido de número")
         
         # Criar diretório da sessão
         session_dir = prepare_hyperparam_directory(None, self.training_dir)
@@ -56,7 +103,7 @@ class HyperparamService:
             dataset_id=dataset_id,
             status="pending",
             search_space=search_space or {},
-            iterations=max_trials,
+            iterations=0,  # Será atualizado quando iniciar a busca
             trials_data=[],
             best_params={},
             best_metrics={}
@@ -68,6 +115,74 @@ class HyperparamService:
         self._db.refresh(search)
         
         return search
+
+    def _generate_param_combinations(self, search_space: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        Gera todas as combinações possíveis de parâmetros a partir do search_space.
+        """
+        from itertools import product
+        
+        # Separar parâmetros que são arrays (para combinação) dos que são valores únicos
+        array_params = {}
+        single_params = {}
+        
+        for key, value in search_space.items():
+            if isinstance(value, list):
+                array_params[key] = value
+            elif isinstance(value, dict) and "min" in value and "max" in value:
+                # Para parâmetros com min/max, gerar valores intermediários
+                if key == "epochs":
+                    # Para epochs, gerar valores inteiros
+                    min_val = int(value["min"])
+                    max_val = int(value["max"])
+                    step = max(1, (max_val - min_val) // 3)  # Gerar 3 valores intermediários
+                    array_params[key] = list(range(min_val, max_val + 1, step))
+                elif key == "batch_size":
+                    # Para batch_size, preferir potências de 2
+                    min_val = int(value["min"])
+                    max_val = int(value["max"])
+                    # Encontrar as potências de 2 dentro do intervalo
+                    powers = []
+                    power = 1
+                    while power <= max_val:
+                        if power >= min_val:
+                            powers.append(power)
+                        power *= 2
+                    array_params[key] = powers
+                elif key == "learning_rate":
+                    # Para learning_rate, gerar valores logarítmicos
+                    min_val = float(value["min"])
+                    max_val = float(value["max"])
+                    # Gerar 3 valores logarítmicos
+                    import numpy as np
+                    array_params[key] = list(np.logspace(np.log10(min_val), np.log10(max_val), num=3))
+            else:
+                single_params[key] = value
+        
+        # Gerar todas as combinações possíveis dos parâmetros em array
+        param_names = list(array_params.keys())
+        param_values = [array_params[name] for name in param_names]
+        combinations = list(product(*param_values))
+        
+        # Construir a lista final de combinações
+        result = []
+        for combo in combinations:
+            # Criar dicionário com os valores da combinação atual
+            param_dict = {name: value for name, value in zip(param_names, combo)}
+            
+            # Converter batch_size para batch (nome usado pelo YOLO)
+            if "batch_size" in param_dict:
+                param_dict["batch"] = param_dict.pop("batch_size")
+            
+            # Converter learning_rate para lr0 (nome usado pelo YOLO)
+            if "learning_rate" in param_dict:
+                param_dict["lr0"] = param_dict.pop("learning_rate")
+            
+            # Adicionar os parâmetros únicos
+            param_dict.update(single_params)
+            result.append(param_dict)
+        
+        return result
 
     async def start_hyperparam_search(self, search_id: int) -> HyperparamSearch:
         """
@@ -87,33 +202,23 @@ class HyperparamService:
         # Atualizar status
         search.status = "running"
         search.started_at = datetime.utcnow()
+        
+        # Gerar todas as combinações possíveis de parâmetros
+        param_combinations = self._generate_param_combinations(search.search_space)
+        
+        # Atualizar o número de trials com base nas combinações
+        search.iterations = len(param_combinations)
+        search.trials_data = []  # Inicializar lista vazia de trials
         self._db.commit()
         
-        # Obter dataset para preparar data_yaml
-        dataset = self._db.query(Dataset).get(search.dataset_id)
-        if not dataset:
-            raise ValueError(f"Dataset {search.dataset_id} não encontrado")
-        
-        # Extrair informações do modelo a partir do search_space ou usar valores padrão
-        model_type = "yolov8"  # Valor padrão
-        model_version = "n"    # Valor padrão
-        
-        # Extrair parâmetros e configurações
-        param_space = search.search_space or {}
-        n_trials = search.iterations or 10
-        search_algorithm = "random"  # Valor padrão
-        objective_metric = "map"    # Valor padrão
-        
-        # Iniciar tarefa Celery com todos os parâmetros necessários
+        # Iniciar tarefa Celery com todas as combinações
         task = run_hyperparameter_search.delay(
             search_id=search_id,
             dataset_id=search.dataset_id,
-            param_space=param_space,
-            model_type=model_type,
-            model_version=model_version,
-            n_trials=n_trials,
-            search_algorithm=search_algorithm,
-            objective_metric=objective_metric
+            param_space=param_combinations,
+            model_type=search.search_space.get("model_type", "yolov8"),
+            model_version=search.search_space.get("model_size", "n"),
+            data_yaml_path=None
         )
         
         # Iniciar monitoramento via WebSocket
@@ -144,16 +249,30 @@ class HyperparamService:
                 # Obter progresso atual
                 progress = self.get_progress(search_id)
                 current_trial = len(search.trials_data or [])
+                # Se task.info trouxer current_trial em execução, usar esse valor
+                if task.info and isinstance(task.info, dict) and "current_trial" in task.info:
+                    current_trial = task.info["current_trial"]
                 
                 # Log de status da tarefa
                 if task.state != 'PENDING':
                     logger.debug(f"Task state: {task.state}, info: {task.info}")
+                
+                # Heartbeat: envie a cada 10 segundos se não houver progresso novo
+                import time
+                if not hasattr(self, '_last_ws_heartbeat'):
+                    self._last_ws_heartbeat = 0
+                now = time.time()
+                send_heartbeat = False
+                if now - self._last_ws_heartbeat > 10:
+                    send_heartbeat = True
+                    self._last_ws_heartbeat = now
                 
                 # Verificar se houve mudança no trial atual
                 if current_trial > last_iteration:
                     last_iteration = current_trial
                     last_reported_epoch = -1  # Reset do controle de épocas ao começar um novo trial
                     logger.info(f"Novo trial iniciado: {current_trial}/{search.iterations}")
+                    send_heartbeat = True  # Sempre envie update ao mudar de trial
                 
                 # Verificar progresso da época dentro do trial atual
                 if task.info and isinstance(task.info, dict):
@@ -173,29 +292,15 @@ class HyperparamService:
                         logger.info(f"Valores brutos: current_trial={current_trial}, search.iterations={search.iterations}, current_epoch={current_epoch}, total_epochs={total_epochs}")
                         
                         # Nova fórmula simplificada para percent_complete
-                        # Garantir que current_trial seja pelo menos 1 para cálculos
-                        trial_idx = max(1, current_trial)  # Usar 1 para o primeiro trial
-                        
-                        # Calcular progresso baseado no índice do trial (1-based) e na proporção da época atual
-                        # Para 5 trials, cada um vale 20% do progresso
+                        trial_idx = max(1, current_trial)
                         trial_percent = (trial_idx - 1) * (100 / search.iterations)
                         epoch_percent = (current_epoch / max(1, total_epochs)) * (100 / search.iterations)
-                        
-                        # Somar os dois componentes do progresso
                         percent_complete = trial_percent + epoch_percent
-                        
-                        # Garantir que seja pelo menos 1 se estiver em andamento, para feedback visual
                         if percent_complete < 1 and current_epoch > 0:
                             percent_complete = 1
-                            
-                        # Converter para inteiro mantendo arredondamento correto
                         percent_complete = int(round(percent_complete))
-                        
-                        # Garantir limites
                         percent_complete = max(0, min(100, percent_complete))
-                        
                         logger.info(f"Cálculo detalhado: trial_idx={trial_idx}, trial_percent={trial_percent:.2f}%, epoch_percent={epoch_percent:.2f}%, final={percent_complete}%")
-                        
                         # Enviar atualização detalhada via WebSocket
                         await send_hyperparam_update(
                             str(search_id),
@@ -217,12 +322,57 @@ class HyperparamService:
                             }
                         )
                         logger.info(f"Atualização via WebSocket enviada para a busca {search_id}")
+                        self._last_ws_heartbeat = now
+                    elif send_heartbeat:
+                        # Enviar heartbeat mesmo sem progresso novo
+                        await send_hyperparam_update(
+                            str(search_id),
+                            {
+                                "status": search.status,
+                                "trials": search.trials_data or [],
+                                "best_params": search.best_params or {},
+                                "best_metrics": search.best_metrics or {},
+                                "current_trial": current_trial,
+                                "total_trials": search.iterations,
+                                "progress": {},
+                                "heartbeat": True
+                            }
+                        )
+                        logger.info(f"Heartbeat WebSocket enviado para a busca {search_id}")
+                elif send_heartbeat:
+                    # Enviar heartbeat mesmo sem progresso novo
+                    await send_hyperparam_update(
+                        str(search_id),
+                        {
+                            "status": search.status,
+                            "trials": search.trials_data or [],
+                            "best_params": search.best_params or {},
+                            "best_metrics": search.best_metrics or {},
+                            "current_trial": current_trial,
+                            "total_trials": search.iterations,
+                            "progress": {},
+                            "heartbeat": True
+                        }
+                    )
+                    logger.info(f"Heartbeat WebSocket enviado para a busca {search_id}")
                 
                 # Se a task terminou, verificar resultado
                 if task.ready():
                     if task.successful():
                         result = task.get()
                         logger.info(f"Busca {search_id} concluída com sucesso: {result}")
+                        # Atualizar best_metrics com as novas métricas
+                        if result.get("best_metrics"):
+                            search.best_metrics = {
+                                **search.best_metrics,  # Manter métricas existentes
+                                "precision": result["best_metrics"].get("precision"),
+                                "recall": result["best_metrics"].get("recall"),
+                                "f1_score": result["best_metrics"].get("f1_score"),
+                                "best_precision": result["best_metrics"].get("best_precision"),
+                                "best_recall": result["best_metrics"].get("best_recall"),
+                                "best_f1_score": result["best_metrics"].get("best_f1_score")
+                            }
+                            self._db.commit()
                         await send_hyperparam_update(
                             str(search_id),
                             {
