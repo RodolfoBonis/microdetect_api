@@ -249,8 +249,10 @@ class TrainingService:
                         # Debug valores brutos
                         logger.info(f"Valores brutos: current_epoch={current_epoch}, total_epochs={total_epochs}")
                         
-                        # Calcular porcentagem de progresso
+                        # Calcular porcentagem de progresso de forma similar à busca de hiperparâmetros
                         epoch_percent = (current_epoch / max(1, total_epochs)) * 100
+                        
+                        # Converter para inteiro mantendo arredondamento correto
                         percent_complete = int(round(epoch_percent))
                         
                         # Garantir que seja pelo menos 1 se estiver em andamento
@@ -288,15 +290,14 @@ class TrainingService:
                                 "progress": {
                                     "current_epoch": current_epoch,
                                     "total_epochs": total_epochs,
-                                    "percent_complete": percent_complete,
-                                    "progress_type": progress_type
+                                    "percent_complete": percent_complete
                                 }
                             }
                         )
                         logger.info(f"Atualização via WebSocket enviada para o treinamento {session_id}")
                         logger.info(f"Métricas enviadas: {metrics_to_send}")
                 
-                # Verificar atualizações com mais frequência
+                # Verificar atualizações com mais frequência (mesmo intervalo da busca de hiperparâmetros)
                 await asyncio.sleep(0.1)  # Atualizar 10 vezes por segundo
                 
         except Exception as e:

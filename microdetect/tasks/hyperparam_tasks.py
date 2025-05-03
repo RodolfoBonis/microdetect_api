@@ -150,106 +150,67 @@ def run_hyperparameter_search(
             
             # Implementação simples de busca aleatória
             best_params = None
-            best_metric_value = -float('inf') if objective_metric != "loss" else float('inf')
+            best_metric_value = float('inf') if objective_metric == "loss" else float('-inf')
             
             # Definir uma seed para reprodutibilidade
             random.seed(42)
             
             # Para cada tentativa
             for current_trial in range(n_trials):
-                # Atualizar o estado no início do trial
-                update_state(
-                    {"status": f"Iniciando trial {current_trial + 1}/{n_trials}"},
-                    trial_num=current_trial + 1,
-                    progress_type="trial_start"
-                )
-                
-                # Gerar hiperparâmetros para esta tentativa
-                if search_algorithm == "random":
-                    trial_params = {}
-                    for param_name, param_config in param_space.items():
-                        logger.debug(f"Processando parâmetro: {param_name}, config: {param_config}")
-                        
-                        # Processamento para intervalo min/max
-                        if isinstance(param_config, dict) and "min" in param_config and "max" in param_config:
-                            # Mapear para parâmetros específicos do YOLOv8
-                            if param_name == "learning_rate":
-                                # Para learning_rate, usar lr0
-                                trial_params["lr0"] = random.uniform(param_config["min"], param_config["max"])
-                                logger.info(f"Definindo lr0={trial_params['lr0']} a partir de {param_name}")
-                            elif param_name == "batch_size":
-                                # Para batch_size, usar batch e garantir inteiro
-                                trial_params["batch"] = int(random.uniform(param_config["min"], param_config["max"]))
-                                logger.info(f"Definindo batch={trial_params['batch']} a partir de {param_name}")
-                            elif param_name == "epochs":
-                                # Para epochs, usar diretamente
-                                trial_params["epochs"] = int(random.uniform(param_config["min"], param_config["max"]))
-                                logger.info(f"Definindo epochs={trial_params['epochs']} a partir de {param_name}")
-                            else:
-                                # Para outros parâmetros, escolher um valor apropriado
-                                if isinstance(param_config["min"], int) and isinstance(param_config["max"], int):
-                                    trial_params[param_name] = random.randint(param_config["min"], param_config["max"])
-                                else:
-                                    trial_params[param_name] = random.uniform(param_config["min"], param_config["max"])
-                                logger.info(f"Definindo {param_name}={trial_params[param_name]} a partir de intervalo")
-                        
-                        # Processamento para parâmetros com "type"
-                        elif isinstance(param_config, dict) and "type" in param_config:
-                            if param_config["type"] == "categorical":
-                                trial_params[param_name] = random.choice(param_config["values"])
-                                logger.info(f"Definindo {param_name}={trial_params[param_name]} (categórico)")
-                            elif param_name == "int":
+                # Gerar parâmetros aleatórios
+                trial_params = {}
+                for param_name, param_config in param_space.items():
+                    logger.debug(f"Processando parâmetro: {param_name}, config: {param_config}")
+                    
+                    # Processamento para intervalo min/max
+                    if isinstance(param_config, dict) and "min" in param_config and "max" in param_config:
+                        # Mapear para parâmetros específicos do YOLOv8
+                        if param_name == "learning_rate":
+                            # Para learning_rate, usar lr0
+                            trial_params["lr0"] = random.uniform(param_config["min"], param_config["max"])
+                            logger.info(f"Definindo lr0={trial_params['lr0']} a partir de {param_name}")
+                        elif param_name == "batch_size":
+                            # Para batch_size, usar batch e garantir inteiro
+                            trial_params["batch"] = int(random.uniform(param_config["min"], param_config["max"]))
+                            logger.info(f"Definindo batch={trial_params['batch']} a partir de {param_name}")
+                        elif param_name == "epochs":
+                            # Para epochs, usar diretamente
+                            trial_params["epochs"] = int(random.uniform(param_config["min"], param_config["max"]))
+                            logger.info(f"Definindo epochs={trial_params['epochs']} a partir de {param_name}")
+                        else:
+                            # Para outros parâmetros, escolher um valor apropriado
+                            if isinstance(param_config["min"], int) and isinstance(param_config["max"], int):
                                 trial_params[param_name] = random.randint(param_config["min"], param_config["max"])
-                                logger.info(f"Definindo {param_name}={trial_params[param_name]} (inteiro)")
-                            elif param_config["type"] == "float":
-                                trial_params[param_name] = random.uniform(param_config["min"], param_config["max"])
-                                logger.info(f"Definindo {param_name}={trial_params[param_name]} (float)")
-                        
-                        # Processamento para lista de valores (assumir categórico)
-                        elif isinstance(param_config, list):
-                            trial_params[param_name] = random.choice(param_config)
-                            logger.info(f"Definindo {param_name}={trial_params[param_name]} (lista de valores)")
-                        
-                        # Valor direto
-                        elif isinstance(param_config, (int, float, str, bool)):
-                            trial_params[param_name] = param_config
-                            logger.info(f"Definindo {param_name}={trial_params[param_name]} (valor direto)")
-                        
-                        # Outros casos (não processáveis)
-                        else:
-                            logger.warning(f"Formato não reconhecido para parâmetro {param_name}: {param_config}")
-                            # Não incluir parâmetros que não podem ser processados
-                else:
-                    # TPE não implementado, usar random como fallback
-                    logger.warning(f"Algoritmo {search_algorithm} não implementado. Usando random como fallback.")
-                    trial_params = {}
-                    for param_name, param_config in param_space.items():
-                        # Verificar se o parâmetro tem o formato esperado com a chave "type"
-                        if isinstance(param_config, dict) and "type" in param_config:
-                            if param_config["type"] == "categorical":
-                                trial_params[param_name] = random.choice(param_config["values"])
-                            elif param_config["type"] == "int":
-                                trial_params[param_name] = random.randint(
-                                    param_config["min"],
-                                    param_config["max"]
-                                )
-                            elif param_config["type"] == "float":
-                                trial_params[param_name] = random.uniform(
-                                    param_config["min"],
-                                    param_config["max"]
-                                )
-                        else:
-                            # Lidar com formato simples (valor direto sem metadata)
-                            if isinstance(param_config, list):
-                                # Assumir que é uma lista de valores categóricos
-                                trial_params[param_name] = random.choice(param_config)
-                            elif isinstance(param_config, (int, float)):
-                                # Valor fixo, usar diretamente
-                                trial_params[param_name] = param_config
                             else:
-                                # Usar como está para outras estruturas
-                                logger.warning(f"Formato não reconhecido para parâmetro {param_name}: {param_config}")
-                                trial_params[param_name] = param_config
+                                trial_params[param_name] = random.uniform(param_config["min"], param_config["max"])
+                            logger.info(f"Definindo {param_name}={trial_params[param_name]} a partir de intervalo")
+                    
+                    # Processamento para parâmetros com "type"
+                    elif isinstance(param_config, dict) and "type" in param_config:
+                        if param_config["type"] == "categorical":
+                            trial_params[param_name] = random.choice(param_config["values"])
+                            logger.info(f"Definindo {param_name}={trial_params[param_name]} (categórico)")
+                        elif param_name == "int":
+                            trial_params[param_name] = random.randint(param_config["min"], param_config["max"])
+                            logger.info(f"Definindo {param_name}={trial_params[param_name]} (inteiro)")
+                        elif param_config["type"] == "float":
+                            trial_params[param_name] = random.uniform(param_config["min"], param_config["max"])
+                            logger.info(f"Definindo {param_name}={trial_params[param_name]} (float)")
+                    
+                    # Processamento para lista de valores (assumir categórico)
+                    elif isinstance(param_config, list):
+                        trial_params[param_name] = random.choice(param_config)
+                        logger.info(f"Definindo {param_name}={trial_params[param_name]} (lista de valores)")
+                    
+                    # Valor direto
+                    elif isinstance(param_config, (int, float, str, bool)):
+                        trial_params[param_name] = param_config
+                        logger.info(f"Definindo {param_name}={trial_params[param_name]} (valor direto)")
+                    
+                    # Outros casos (não processáveis)
+                    else:
+                        logger.warning(f"Formato não reconhecido para parâmetro {param_name}: {param_config}")
+                        # Não incluir parâmetros que não podem ser processados
                 
                 # Verificar se CUDA está disponível e adicionar device
                 if not settings.USE_CUDA:
@@ -258,15 +219,14 @@ def run_hyperparameter_search(
                 else:
                     logger.info("CUDA disponível. Usando GPU para treinamento.")
                     trial_params["device"] = "0"  # ou outro índice de GPU apropriado
-
+                
                 # Atualizar o estado com os parâmetros sugeridos
                 update_state(
                     {
-                        "status": f"Treinando com parâmetros trial {current_trial + 1}/{n_trials}",
-                        "suggested_params": trial_params
-                    },
-                    trial_num=current_trial + 1,
-                    progress_type="trial_training"
+                        "trial": current_trial + 1,
+                        "total_trials": n_trials,
+                        "params": trial_params
+                    }
                 )
                 
                 try:
@@ -285,45 +245,43 @@ def run_hyperparameter_search(
                     
                     # Registrar os resultados
                     trial_result = {
-                        "trial": current_trial + 1,
                         "params": trial_params,
                         "metrics": metrics
                     }
                     trials_results.append(trial_result)
-
+                    
                     search.trials_data = trials_results
-
+                    
                     # Verificar se este é o melhor resultado
                     metric_value = metrics.get(objective_metric, 0)
-
-                    is_better = False
-
+                    
                     if objective_metric == "loss":
                         # Para loss, menor é melhor
-                        is_better = metric_value < best_metric_value
+                        if metric_value < best_metric_value:
+                            best_metric_value = metric_value
+                            best_params = trial_params
                     else:
                         # Para outras métricas, maior é melhor
-                        is_better = metric_value > best_metric_value
-
-                    if is_better:
-                        best_metric_value = metric_value
-                        best_params = trial_params
-                        # Atualizar os melhores parâmetros e métricas no banco
-                        search.best_params = best_params
-                        search.best_metrics = metrics
-
+                        if metric_value > best_metric_value:
+                            best_metric_value = metric_value
+                            best_params = trial_params
+                    
+                    # Atualizar os melhores parâmetros e métricas no banco
+                    search.best_params = best_params
+                    search.best_metrics = metrics
+                    
                     db.commit()
-
+                    
                     # Atualizar o estado com os resultados
                     update_state(
                         {
-                            "status": f"Concluído trial {current_trial + 1}/{n_trials}",
-                            "trial_metrics": metrics,
-                            "current_best_metric": best_metric_value,
-                            "current_best_params": best_params
-                        },
-                        trial_num=current_trial + 1,
-                        progress_type="trial_complete"
+                            "trial": current_trial + 1,
+                            "total_trials": n_trials,
+                            "params": trial_params,
+                            "metrics": metrics,
+                            "best_params": best_params,
+                            "best_metrics": search.best_metrics
+                        }
                     )
                     
                 except Exception as e:

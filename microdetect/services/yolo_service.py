@@ -248,7 +248,7 @@ class YOLOService:
                     
                     # Configurar um callback para o YOLO
                     class ProgressCallback:
-                        def __init__(self, callback, total_epochs, update_interval=1.0):
+                        def __init__(self, callback, total_epochs, update_interval=0.1):
                             self.callback = callback
                             self.total_epochs = total_epochs
                             self.update_interval = update_interval
@@ -260,6 +260,55 @@ class YOLOService:
                             
                             # Imprimir informação para depuração
                             print(f"ProgressCallback inicializado com callback tipo: {type(callback)}")
+                        
+                        def on_train_batch_end(self, trainer):
+                            """Callback chamado após cada batch de treinamento - utilizado para atualizações frequentes"""
+                            current_time = time.time()
+                            
+                            # Log para depuração
+                            logger.debug(f"on_train_batch_end chamado: epoch={trainer.epoch}")
+                            
+                            # Limitar a frequência de atualizações para não sobrecarregar
+                            if current_time - self.last_update_time < self.update_interval:
+                                return
+                                
+                            # Atualizar timestamp
+                            self.last_update_time = current_time
+                            
+                            # Extrair métricas básicas do batch atual
+                            # Obter informações seguras do trainer
+                            batch_info = {}
+                            # Tentar obter informações do batch de diferentes formas
+                            if hasattr(trainer, 'batch_idx'):
+                                batch_info["current_batch"] = trainer.batch_idx
+                            elif hasattr(trainer, 'step'):
+                                batch_info["current_batch"] = trainer.step
+                            
+                            if hasattr(trainer, 'num_batches'):
+                                batch_info["total_batches"] = trainer.num_batches
+                            elif hasattr(trainer, 'dataloader'):
+                                batch_info["total_batches"] = len(trainer.dataloader)
+                                
+                            current_metrics = {
+                                "epoch": trainer.epoch,
+                                "batch_size": getattr(trainer, 'batch_size', 0),
+                                "total_epochs": trainer.epochs,
+                                "loss": float(trainer.loss.detach().cpu().numpy() if hasattr(trainer, 'loss') else 0.0),
+                                "progress_type": "batch",  # Indicar que é uma atualização de batch
+                                **batch_info  # Incluir informações do batch obtidas dinamicamente
+                            }
+                            
+                            # Log antes de chamar o callback
+                            logger.info(f"Enviando atualização de batch: epoch={trainer.epoch}, batch={batch_info.get('current_batch', 'N/A')}")
+                            
+                            # Chamar o callback com as métricas básicas
+                            if callable(self.callback):
+                                try:
+                                    self.callback(current_metrics)
+                                except Exception as e:
+                                    print(f"Erro ao chamar callback: {str(e)}")
+                            else:
+                                print(f"AVISO: self.callback não é uma função chamável: {type(self.callback)}")
                         
                         def on_train_epoch_start(self, trainer):
                             """Callback chamado no início de cada época de treinamento."""
@@ -284,11 +333,22 @@ class YOLOService:
                                 # Obter as métricas atuais
                                 metrics = trainer.metrics
                                 
+                                # Calcular ETA com segurança
+                                eta_seconds = 0
+                                if hasattr(trainer, 'epoch_time') and trainer.epoch_time is not None and hasattr(trainer.epoch_time, 'avg'):
+                                    eta_seconds = trainer.epoch_time.avg * (trainer.epochs - trainer.epoch)
+                                
                                 # Adicionar época atual
                                 epoch_metrics = {
                                     "epoch": self.current_epoch,
                                     "total_epochs": self.total_epochs,
                                     "loss": float(metrics.get("train/box_loss", 0) + metrics.get("train/cls_loss", 0)),
+                                    "map50": float(metrics.get("metrics/mAP50(B)", 0.0)),
+                                    "map50_95": float(metrics.get("metrics/mAP50-95(B)", 0.0)),
+                                    "precision": float(metrics.get("metrics/precision(B)", 0.0)),
+                                    "recall": float(metrics.get("metrics/recall(B)", 0.0)),
+                                    "val_loss": float(metrics.get("val/box_loss", 0.0)),
+                                    "eta_seconds": eta_seconds,
                                     "progress_type": "epoch"
                                 }
                                 
@@ -369,6 +429,7 @@ class YOLOService:
                         progress_callback.callback = lambda x: print(f"Callback inválido: {x}")
 
                     # Adicionar os callbacks
+                    model.add_callback("on_train_batch_end", progress_callback.on_train_batch_end)
                     model.add_callback("on_train_epoch_start", progress_callback.on_train_epoch_start)
                     model.add_callback("on_train_epoch_end", progress_callback.on_train_epoch_end)
                     model.add_callback("on_val_end", progress_callback.on_val_end)
