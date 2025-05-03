@@ -1,11 +1,15 @@
 import os
 import logging
+import time
+import traceback
+
 import torch
 import platform
 import math
 from ultralytics import YOLO
 from typing import List, Dict, Any, Tuple, Optional
 from pathlib import Path
+import random
 
 from microdetect.core.config import settings
 from microdetect.models import Dataset
@@ -234,97 +238,242 @@ class YOLOService:
             
             # Definir uma função para monitorar o progresso, se callback for fornecido
             if callback:
-                # Configurar um callback para o YOLO
-                class ProgressCallback:
-                    def __init__(self):
-                        self.current_epoch = 0
-                        self.total_epochs = params["epochs"]
-                        self.last_update_time = 0
-                        self.update_interval = 0.1  # Reduzir para 0.1 segundos para atualizações mais frequentes
-
-                    def on_train_batch_end(self, trainer):
-                        """Callback chamado após cada batch de treinamento - utilizado para atualizações frequentes"""
-                        import time
-                        current_time = time.time()
-                        
-                        # Log para depuração
-                        logger.debug(f"on_train_batch_end chamado: epoch={trainer.epoch}")
-                        
-                        # Limitar a frequência de atualizações para não sobrecarregar
-                        if current_time - self.last_update_time < self.update_interval:
-                            return
-                            
-                        # Atualizar timestamp
-                        self.last_update_time = current_time
-                        
-                        # Extrair métricas básicas do batch atual
-                        # Obter informações seguras do trainer
-                        batch_info = {}
-                        # Tentar obter informações do batch de diferentes formas
-                        if hasattr(trainer, 'batch_idx'):
-                            batch_info["current_batch"] = trainer.batch_idx
-                        elif hasattr(trainer, 'step'):
-                            batch_info["current_batch"] = trainer.step
-                        
-                        if hasattr(trainer, 'num_batches'):
-                            batch_info["total_batches"] = trainer.num_batches
-                        elif hasattr(trainer, 'dataloader'):
-                            batch_info["total_batches"] = len(trainer.dataloader)
-                            
-                        current_metrics = {
-                            "epoch": trainer.epoch,
-                            "batch_size": getattr(trainer, 'batch_size', 0),
-                            "total_epochs": trainer.epochs,
-                            "loss": float(trainer.loss.detach().cpu().numpy() if hasattr(trainer, 'loss') else 0.0),
-                            "progress_type": "batch",  # Indicar que é uma atualização de batch
-                            **batch_info  # Incluir informações do batch obtidas dinamicamente
-                        }
-                        
-                        # Log antes de chamar o callback
-                        logger.info(f"Enviando atualização de batch: epoch={trainer.epoch}, batch={batch_info.get('current_batch', 'N/A')}")
-                        
-                        # Chamar o callback com as métricas básicas
-                        callback(current_metrics)
+                try:
+                    # Verificar tipo do callback
+                    if not callable(callback):
+                        print(f"AVISO: Callback não é uma função chamável: {type(callback)}")
+                        # Criar uma função wrapper para segurança
+                        original_callback = callback
+                        callback = lambda x: print(f"Callback wrapper: não foi possível chamar {original_callback}")
                     
-                    def on_train_epoch_end(self, trainer):
-                        """Callback chamado após cada época de treinamento - utilizado para métricas completas"""
-                        # Log para depuração
-                        logger.info(f"on_train_epoch_end chamado: epoch={trainer.epoch}")
+                    # Configurar um callback para o YOLO
+                    class ProgressCallback:
+                        def __init__(self, callback, total_epochs, update_interval=0.1):
+                            self.callback = callback
+                            self.total_epochs = total_epochs
+                            self.update_interval = update_interval
+                            self.last_update_time = time.time()
+                            self.current_epoch = 0
+                            self.validation_results = {}
+                            self.epoch_start_time = None
+                            self.epoch_times = []
+                            
+                            # Imprimir informação para depuração
+                            print(f"ProgressCallback inicializado com callback tipo: {type(callback)}")
                         
-                        # Calcular ETA com segurança
-                        eta_seconds = 0
-                        if hasattr(trainer, 'epoch_time') and trainer.epoch_time is not None and hasattr(trainer.epoch_time, 'avg'):
-                            eta_seconds = trainer.epoch_time.avg * (trainer.epochs - trainer.epoch)
+                        def on_train_batch_end(self, trainer):
+                            """Callback chamado após cada batch de treinamento - utilizado para atualizações frequentes"""
+                            current_time = time.time()
+                            
+                            # Log para depuração
+                            logger.debug(f"on_train_batch_end chamado: epoch={trainer.epoch}")
+                            
+                            # Limitar a frequência de atualizações para não sobrecarregar
+                            if current_time - self.last_update_time < self.update_interval:
+                                return
+                                
+                            # Atualizar timestamp
+                            self.last_update_time = current_time
+                            
+                            # Extrair métricas básicas do batch atual
+                            # Obter informações seguras do trainer
+                            batch_info = {}
+                            # Tentar obter informações do batch de diferentes formas
+                            if hasattr(trainer, 'batch_idx'):
+                                batch_info["current_batch"] = trainer.batch_idx
+                            elif hasattr(trainer, 'step'):
+                                batch_info["current_batch"] = trainer.step
+                            
+                            if hasattr(trainer, 'num_batches'):
+                                batch_info["total_batches"] = trainer.num_batches
+                            elif hasattr(trainer, 'dataloader'):
+                                batch_info["total_batches"] = len(trainer.dataloader)
+                                
+                            current_metrics = {
+                                "epoch": trainer.epoch,
+                                "batch_size": getattr(trainer, 'batch_size', 0),
+                                "total_epochs": trainer.epochs,
+                                "loss": float(trainer.loss.detach().cpu().numpy() if hasattr(trainer, 'loss') else 0.0),
+                                "progress_type": "batch",  # Indicar que é uma atualização de batch
+                                **batch_info  # Incluir informações do batch obtidas dinamicamente
+                            }
+                            
+                            # Log antes de chamar o callback
+                            logger.info(f"Enviando atualização de batch: epoch={trainer.epoch}, batch={batch_info.get('current_batch', 'N/A')}")
+                            
+                            # Chamar o callback com as métricas básicas
+                            if callable(self.callback):
+                                try:
+                                    self.callback(current_metrics)
+                                except Exception as e:
+                                    print(f"Erro ao chamar callback: {str(e)}")
+                            else:
+                                print(f"AVISO: self.callback não é uma função chamável: {type(self.callback)}")
                         
-                        # Extrair métricas da época atual com dados de validação
-                        current_metrics = {
-                            "epoch": trainer.epoch,
-                            "total_epochs": trainer.epochs,
-                            "loss": float(trainer.loss.detach().cpu().numpy() if hasattr(trainer, 'loss') else 0.0),
-                            "map50": float(trainer.metrics.get("metrics/mAP50(B)", 0.0)),
-                            "map": float(trainer.metrics.get("metrics/mAP50-95(B)", 0.0)),
-                            "precision": float(trainer.metrics.get("metrics/precision(B)", 0.0)),
-                            "recall": float(trainer.metrics.get("metrics/recall(B)", 0.0)),
-                            "val_loss": float(trainer.metrics.get("val/box_loss", 0.0)),
-                            "eta_seconds": eta_seconds,
-                            "progress_type": "epoch"  # Indicar que é uma atualização de época completa
-                        }
+                        def on_train_epoch_start(self, trainer):
+                            """Callback chamado no início de cada época de treinamento."""
+                            self.current_epoch = trainer.epoch
+                            self.epoch_start_time = time.time()
                         
-                        # Log antes de chamar o callback
-                        logger.info(f"Enviando atualização de época completa: epoch={trainer.epoch}/{trainer.epochs}")
+                        def on_train_epoch_end(self, trainer):
+                            """Callback chamado após cada época de treinamento."""
+                            current_time = time.time()
+                            
+                            # Calcular o tempo da época atual
+                            if self.epoch_start_time is not None:
+                                elapsed = current_time - self.epoch_start_time
+                                self.epoch_times.append(elapsed)
+                            
+                            if current_time - self.last_update_time >= self.update_interval:
+                                self.last_update_time = current_time
+                                
+                                # Atualizar contador de época
+                                self.current_epoch = trainer.epoch
+                                
+                                # Obter as métricas atuais
+                                metrics = trainer.metrics
+                                
+                                # Calcular ETA com segurança
+                                eta_seconds = 0
+                                if hasattr(trainer, 'epoch_time') and trainer.epoch_time is not None and hasattr(trainer.epoch_time, 'avg'):
+                                    eta_seconds = trainer.epoch_time.avg * (trainer.epochs - trainer.epoch)
+                                
+                                # Adicionar época atual
+                                epoch_metrics = {
+                                    "epoch": self.current_epoch,
+                                    "total_epochs": self.total_epochs,
+                                    "loss": float(metrics.get("train/box_loss", 0) + metrics.get("train/cls_loss", 0)),
+                                    "map50": float(metrics.get("metrics/mAP50(B)", 0.0)),
+                                    "map50_95": float(metrics.get("metrics/mAP50-95(B)", 0.0)),
+                                    "precision": float(metrics.get("metrics/precision(B)", 0.0)),
+                                    "recall": float(metrics.get("metrics/recall(B)", 0.0)),
+                                    "val_loss": float(metrics.get("val/box_loss", 0.0)),
+                                    "eta_seconds": eta_seconds,
+                                    "progress_type": "epoch"
+                                }
+                                
+                                # Adicionar métricas de validação anteriores, se disponíveis
+                                if self.validation_results:
+                                    for k, v in self.validation_results.items():
+                                        if k not in epoch_metrics and k != "progress_type":
+                                            epoch_metrics[k] = v
+                                
+                                # Calcular tempo médio por época e ETA
+                                avg_epoch_time = sum(self.epoch_times) / len(self.epoch_times) if self.epoch_times else 0
+                                remaining_epochs = self.total_epochs - self.current_epoch
+                                eta_seconds = int(remaining_epochs * avg_epoch_time)
+                                
+                                # Adicionar ETA estimado de forma segura
+                                epoch_metrics["eta_seconds"] = eta_seconds
+                                epoch_metrics["avg_epoch_time"] = avg_epoch_time
+                                
+                                # Verificar se callback é uma função antes de chamar
+                                if callable(self.callback):
+                                    try:
+                                        self.callback(epoch_metrics)
+                                    except Exception as e:
+                                        print(f"Erro ao chamar callback: {str(e)}")
+                                else:
+                                    print(f"AVISO: self.callback não é uma função chamável: {type(self.callback)}")
                         
-                        # Forçar a chamada do callback para garantir que cada época seja reportada
-                        self.last_update_time = 0  # Reset do tempo para garantir atualização
-                        callback(current_metrics)
+                        def on_val_end(self, validator):
+                            """Callback chamado após validação."""
+                            print("VALIDAÇÃO CONCLUÍDA!")
+                            
+                            # Verificar se validator tem métricas
+                            if not hasattr(validator, 'metrics') or validator.metrics is None:
+                                print("AVISO: validator não tem métricas")
+                                return
+                            
+                            # Acesso seguro às métricas do validator
+                            try:
+                                metrics = validator.metrics
+                                
+                                # DEBUG: Imprimir métricas de validação
+                                
+                                # Construir relatório de métricas
+                                val_epoch_metrics = {
+                                    "epoch": self.current_epoch,
+                                    "total_epochs": self.total_epochs,
+                                    "progress_type": "validation",
+                                    "map50": float(metrics.results_dict.get('metrics/mAP50(B)', 0.0)),
+                                    "map50_95": float(metrics.results_dict.get('metrics/mAP50-95(B)', 0.0)),
+                                    "precision": float(metrics.results_dict.get('metrics/precision(B)', 0.0)),
+                                    "recall": float(metrics.results_dict.get('metrics/recall(B)', 0.0)),
+                                    "fitness": float(metrics.results_dict.get('fitness', 0.0))
+                                }
+                                
+                                # Debug métricas extraídas
+                                print(f"Métricas extraídas: {val_epoch_metrics}")
+                                
+                                # Verificar se callback é uma função antes de chamar
+                                if callable(self.callback):
+                                    try:
+                                        self.callback(val_epoch_metrics)
+                                    except Exception as e:
+                                        print(f"Erro ao chamar callback: {str(e)}")
+                                else:
+                                    print(f"AVISO: self.callback não é uma função chamável: {type(self.callback)}")
+                                    
+                            except Exception as e:
+                                print(f"Erro ao processar métricas de validação: {str(e)}")
+                                print(f"Traceback: {traceback.format_exc()}")
+
+                    # Registrar os callbacks
+                    progress_callback = ProgressCallback(callback, params["epochs"])
+
+                    # Verificar se callback é válido
+                    if not callable(callback):
+                        print(f"AVISO: O callback fornecido não é uma função: {type(callback)}")
+                        # Corrigir para evitar o erro
+                        progress_callback.callback = lambda x: print(f"Callback inválido: {x}")
+
+                    # Adicionar os callbacks
+                    model.add_callback("on_train_batch_end", progress_callback.on_train_batch_end)
+                    model.add_callback("on_train_epoch_start", progress_callback.on_train_epoch_start)
+                    model.add_callback("on_train_epoch_end", progress_callback.on_train_epoch_end)
+                    model.add_callback("on_val_end", progress_callback.on_val_end)
                 
-                # Registrar os callbacks
-                progress_callback = ProgressCallback()
-                model.add_callback("on_train_batch_end", progress_callback.on_train_batch_end)
-                model.add_callback("on_train_epoch_end", progress_callback.on_train_epoch_end)
+                except Exception as e:
+                    print(f"Erro ao configurar callbacks: {str(e)}")
+                    # Continuar o treinamento sem callbacks se houver erro
             
             # Registrar os parâmetros finais para debug
             print(f"Parâmetros finais de treinamento: {params}")
             
+            # Em yolo_service.py, ao configurar params para model.train()
+            params.update({
+                "val": True,  # Garantir que validação esteja ativada
+            })
+            
+            # Preparar os hiperparâmetros para o treinamento
+            processed_params = {}
+
+            # Converter o formato de hiperparâmetros para o formato que o YOLOv8 espera
+            for param_name, param_value in hyperparameters.items():
+                # Verificar se o parâmetro é um intervalo (min/max)
+                if isinstance(param_value, dict) and "min" in param_value and "max" in param_value:
+                    # Processar parâmetros específicos
+                    if param_name == "learning_rate":
+                        # Para learning_rate, mapear para lr0 no YOLOv8
+                        processed_params["lr0"] = random.uniform(param_value["min"], param_value["max"])
+                    elif param_name == "batch_size":
+                        # Para batch_size, mapear para batch no YOLOv8, garantindo inteiro
+                        processed_params["batch"] = int(random.uniform(param_value["min"], param_value["max"]))
+                    elif param_name == "epochs":
+                        # Para epochs, usar diretamente
+                        processed_params["epochs"] = int(random.uniform(param_value["min"], param_value["max"]))
+                    else:
+                        # Para outros parâmetros com intervalo, escolher um valor aleatório
+                        if isinstance(param_value["min"], int) and isinstance(param_value["max"], int):
+                            processed_params[param_name] = random.randint(param_value["min"], param_value["max"])
+                        else:
+                            processed_params[param_name] = random.uniform(param_value["min"], param_value["max"])
+                else:
+                    # Se não for um intervalo, usar o valor diretamente
+                    processed_params[param_name] = param_value
+
+            # Usar os parâmetros processados para treinamento
             # Treinar modelo
             results = model.train(
                 data=data_yaml_path,
@@ -522,4 +671,4 @@ class YOLOService:
         
         # Exportar modelo
         export_path = self._model_cache[model_id].export(format=format)
-        return export_path 
+        return export_path

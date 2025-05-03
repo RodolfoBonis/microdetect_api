@@ -161,6 +161,7 @@ class HyperparamService:
                     current_epoch = task.info.get("epoch", 0)
                     progress_type = task.info.get("progress_type", "")
                     total_epochs = task.info.get("total_epochs", 100)
+                    
                     logger.debug(f"Task info: epoch={current_epoch}, tipo={progress_type}")
                     
                     # Sempre enviar atualizações de época
@@ -368,4 +369,4 @@ class HyperparamService:
         Fechar a sessão do banco quando o serviço for destruído
         """
         if hasattr(self, '_db'):
-            self._db.close() 
+            self._db.close()

@@ -264,23 +264,38 @@ class TrainingService:
                         
                         logger.info(f"Cálculo detalhado: epoch_percent={epoch_percent:.2f}%, final={percent_complete}%")
                         
+                        # Preparar métricas para envio
+                        metrics_to_send = {
+                            "map50": session.metrics.get("map50"),
+                            "map50_95": session.metrics.get("map50_95"),
+                            "precision": session.metrics.get("precision"),
+                            "recall": session.metrics.get("recall"),
+                            "fitness": session.metrics.get("fitness")
+                        }
+                        
+                        # Remover valores None e converter para float
+                        metrics_to_send = {
+                            k: float(v) if v is not None else 0.0 
+                            for k, v in metrics_to_send.items()
+                        }
+                        
                         # Enviar atualização detalhada via WebSocket
                         await self.websocket_manager.broadcast_json(
                             f"training_{session_id}",
                             {
                                 "status": "training",
-                                "metrics": session.metrics,
+                                "metrics": metrics_to_send,
                                 "current_epoch": current_epoch,
                                 "total_epochs": total_epochs,
                                 "progress": {
                                     "current_epoch": current_epoch,
                                     "total_epochs": total_epochs,
-                                    "percent_complete": percent_complete,
-                                    "progress_type": progress_type
+                                    "percent_complete": percent_complete
                                 }
                             }
                         )
                         logger.info(f"Atualização via WebSocket enviada para o treinamento {session_id}")
+                        logger.info(f"Métricas enviadas: {metrics_to_send}")
                 
                 # Verificar atualizações com mais frequência (mesmo intervalo da busca de hiperparâmetros)
                 await asyncio.sleep(0.1)  # Atualizar 10 vezes por segundo
