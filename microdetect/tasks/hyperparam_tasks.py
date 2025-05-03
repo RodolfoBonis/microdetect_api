@@ -310,6 +310,7 @@ def run_hyperparameter_search(
             
             # Atualizar o status da busca
             search.status = "completed"
+            search.completed_at = datetime.utcnow()
             search.result = json.dumps(result)
             db.commit()
             
