@@ -35,12 +35,9 @@ def run_hyperparameter_search(
     self,
     search_id: int,
     dataset_id: int,
-    param_space: Dict[str, Any],
+    param_space: List[Dict[str, Any]],
     model_type: str,
     model_version: str,
-    n_trials: int,
-    search_algorithm: str,
-    objective_metric: str = "map",
     data_yaml_path: str = None
 ) -> Dict[str, Any]:
     """
@@ -50,12 +47,9 @@ def run_hyperparameter_search(
         self: A tarefa atual
         search_id: ID da busca de hiperparâmetros
         dataset_id: ID do dataset
-        param_space: Espaço de parâmetros para otimização
+        param_space: Lista de combinações de parâmetros para testar
         model_type: Tipo do modelo (ex: "yolov8")
         model_version: Versão do modelo (ex: "n", "s", "m", "l", "x")
-        n_trials: Número de tentativas
-        search_algorithm: Algoritmo de busca ("random", "tpe")
-        objective_metric: Métrica a ser otimizada ("map", "map50", etc.)
         data_yaml_path: Caminho para o arquivo data.yaml (opcional)
         
     Returns:
@@ -90,7 +84,7 @@ def run_hyperparameter_search(
             trials_results = []
             
             # Função para atualizar o estado da tarefa
-            def update_state(metrics, trial_num=None, total_trials=n_trials, progress_type="trial"):
+            def update_state(metrics, trial_num=None, total_trials=len(param_space), progress_type="trial"):
                 """Atualiza o estado da tarefa Celery."""
                 if trial_num is not None:
                     state_info = {
@@ -128,7 +122,7 @@ def run_hyperparameter_search(
                         # Adicionar informações do trial ao progresso
                         metrics["progress_type"] = "epoch_in_trial"
                         metrics["current_trial"] = trial_num
-                        metrics["total_trials"] = n_trials
+                        metrics["total_trials"] = len(param_space)
                         
                         # Registrar para depuração
                         logger.info(f"Callback de treinamento chamado: trial={trial_num}, tipo={metrics.get('progress_type')}, época={metrics.get('epoch')}")
@@ -148,96 +142,30 @@ def run_hyperparameter_search(
                 
                 return training_progress_callback
             
-            # Implementação simples de busca aleatória
+            # Implementação de busca em grade (grid search)
             best_params = None
-            best_metric_value = float('inf') if objective_metric == "loss" else float('-inf')
+            best_metric_value = float('-inf')  # Usando mAP como métrica padrão
             
-            # Definir uma seed para reprodutibilidade
-            random.seed(42)
-            
-            # Para cada tentativa
-            for current_trial in range(n_trials):
-                # Gerar parâmetros aleatórios
-                trial_params = {}
-                for param_name, param_config in param_space.items():
-                    logger.debug(f"Processando parâmetro: {param_name}, config: {param_config}")
-                    
-                    # Processamento para intervalo min/max
-                    if isinstance(param_config, dict) and "min" in param_config and "max" in param_config:
-                        # Mapear para parâmetros específicos do YOLOv8
-                        if param_name == "learning_rate":
-                            # Para learning_rate, usar lr0
-                            trial_params["lr0"] = random.uniform(param_config["min"], param_config["max"])
-                            logger.info(f"Definindo lr0={trial_params['lr0']} a partir de {param_name}")
-                        elif param_name == "batch_size":
-                            # Para batch_size, usar batch e garantir inteiro
-                            trial_params["batch"] = int(random.uniform(param_config["min"], param_config["max"]))
-                            logger.info(f"Definindo batch={trial_params['batch']} a partir de {param_name}")
-                        elif param_name == "epochs":
-                            # Para epochs, usar diretamente
-                            trial_params["epochs"] = int(random.uniform(param_config["min"], param_config["max"]))
-                            logger.info(f"Definindo epochs={trial_params['epochs']} a partir de {param_name}")
-                        else:
-                            # Para outros parâmetros, escolher um valor apropriado
-                            if isinstance(param_config["min"], int) and isinstance(param_config["max"], int):
-                                trial_params[param_name] = random.randint(param_config["min"], param_config["max"])
-                            else:
-                                trial_params[param_name] = random.uniform(param_config["min"], param_config["max"])
-                            logger.info(f"Definindo {param_name}={trial_params[param_name]} a partir de intervalo")
-                    
-                    # Processamento para parâmetros com "type"
-                    elif isinstance(param_config, dict) and "type" in param_config:
-                        if param_config["type"] == "categorical":
-                            trial_params[param_name] = random.choice(param_config["values"])
-                            logger.info(f"Definindo {param_name}={trial_params[param_name]} (categórico)")
-                        elif param_name == "int":
-                            trial_params[param_name] = random.randint(param_config["min"], param_config["max"])
-                            logger.info(f"Definindo {param_name}={trial_params[param_name]} (inteiro)")
-                        elif param_config["type"] == "float":
-                            trial_params[param_name] = random.uniform(param_config["min"], param_config["max"])
-                            logger.info(f"Definindo {param_name}={trial_params[param_name]} (float)")
-                    
-                    # Processamento para lista de valores (assumir categórico)
-                    elif isinstance(param_config, list):
-                        trial_params[param_name] = random.choice(param_config)
-                        logger.info(f"Definindo {param_name}={trial_params[param_name]} (lista de valores)")
-                    
-                    # Valor direto
-                    elif isinstance(param_config, (int, float, str, bool)):
-                        trial_params[param_name] = param_config
-                        logger.info(f"Definindo {param_name}={trial_params[param_name]} (valor direto)")
-                    
-                    # Outros casos (não processáveis)
-                    else:
-                        logger.warning(f"Formato não reconhecido para parâmetro {param_name}: {param_config}")
-                        # Não incluir parâmetros que não podem ser processados
-                
-                # Verificar se CUDA está disponível e adicionar device
-                if not settings.USE_CUDA:
-                    logger.info("CUDA não disponível. Adicionando device=cpu para treinamento.")
-                    trial_params["device"] = "cpu"
-                else:
-                    logger.info("CUDA disponível. Usando GPU para treinamento.")
-                    trial_params["device"] = "0"  # ou outro índice de GPU apropriado
-                
-                # Atualizar o estado com os parâmetros sugeridos
-                update_state(
-                    {
-                        "trial": current_trial + 1,
-                        "total_trials": n_trials,
-                        "params": trial_params
-                    }
-                )
-                
+            # Para cada combinação de parâmetros
+            for current_trial, trial_params in enumerate(param_space):
                 try:
+                    # Atualizar o estado com os parâmetros sugeridos
+                    update_state(
+                        {
+                            "trial": current_trial + 1,
+                            "total_trials": len(param_space),
+                            "params": trial_params
+                        }
+                    )
+                    
                     # Realizar treinamento com os parâmetros desta tentativa
                     metrics = loop.run_until_complete(
                         yolo_service.train(
                             dataset_id=dataset_id,
-                            model_type=model_type,
-                            model_version=model_version,
+                            model_type=trial_params.get("model_type", model_type),
+                            model_version=trial_params.get("model_size", model_version),
                             hyperparameters=trial_params,
-                            callback=create_training_progress_callback(current_trial + 1),  # Passar callback para monitorar progresso
+                            callback=create_training_progress_callback(current_trial + 1),
                             db_session=db,
                             data_yaml_path=data_yaml_path
                         )
@@ -253,18 +181,11 @@ def run_hyperparameter_search(
                     search.trials_data = trials_results
                     
                     # Verificar se este é o melhor resultado
-                    metric_value = metrics.get(objective_metric, 0)
+                    metric_value = metrics.get("map50", 0)  # Usando mAP50 como métrica principal
                     
-                    if objective_metric == "loss":
-                        # Para loss, menor é melhor
-                        if metric_value < best_metric_value:
-                            best_metric_value = metric_value
-                            best_params = trial_params
-                    else:
-                        # Para outras métricas, maior é melhor
-                        if metric_value > best_metric_value:
-                            best_metric_value = metric_value
-                            best_params = trial_params
+                    if metric_value > best_metric_value:
+                        best_metric_value = metric_value
+                        best_params = trial_params
                     
                     # Atualizar os melhores parâmetros e métricas no banco
                     search.best_params = best_params
@@ -276,7 +197,7 @@ def run_hyperparameter_search(
                     update_state(
                         {
                             "trial": current_trial + 1,
-                            "total_trials": n_trials,
+                            "total_trials": len(param_space),
                             "params": trial_params,
                             "metrics": metrics,
                             "best_params": best_params,
@@ -290,7 +211,7 @@ def run_hyperparameter_search(
                     # Atualizar o estado com erro
                     update_state(
                         {
-                            "status": f"Erro no trial {current_trial + 1}/{n_trials}: {str(e)}",
+                            "status": f"Erro no trial {current_trial + 1}/{len(param_space)}: {str(e)}",
                             "error": str(e)
                         },
                         trial_num=current_trial + 1,
@@ -304,7 +225,6 @@ def run_hyperparameter_search(
             result = {
                 "best_params": best_params,
                 "best_metric": best_metric_value,
-                "objective_metric": objective_metric,
                 "trials": trials_results
             }
             

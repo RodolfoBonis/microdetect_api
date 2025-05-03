@@ -181,6 +181,36 @@ class YOLOService:
             
             # Atualizar com parâmetros fornecidos
             if hyperparameters:
+                # Processar parâmetros específicos do search_space
+                if "model_type" in hyperparameters:
+                    model_type = hyperparameters["model_type"].lower()  # Convertendo para minúsculas
+                    logger.info(f"Tipo de modelo selecionado: {model_type}")
+                
+                if "model_size" in hyperparameters:
+                    model_version = hyperparameters["model_size"]
+                    logger.info(f"Tamanho do modelo selecionado: {model_version}")
+                
+                if "imgsz" in hyperparameters:
+                    params["imgsz"] = hyperparameters["imgsz"]
+                    logger.info(f"Tamanho da imagem selecionado: {params['imgsz']}")
+                
+                if "optimizer" in hyperparameters:
+                    params["optimizer"] = hyperparameters["optimizer"]
+                    logger.info(f"Otimizador selecionado: {params['optimizer']}")
+                
+                if "device" in hyperparameters:
+                    device = hyperparameters["device"]
+                    if device == "auto":
+                        # Usar CUDA se disponível, caso contrário CPU
+                        params["device"] = "0" if settings.USE_CUDA else "cpu"
+                    elif device.startswith("GPU"):
+                        # Extrair o número da GPU se fornecido
+                        gpu_num = device.replace("GPU", "").strip()
+                        params["device"] = gpu_num if gpu_num else "0"
+                    else:
+                        params["device"] = device
+                    logger.info(f"Dispositivo selecionado: {params['device']}")
+                
                 # Verificar e converter parâmetros incompatíveis
                 if "batch_size" in hyperparameters:
                     hyperparameters["batch"] = hyperparameters.pop("batch_size")
@@ -497,6 +527,13 @@ class YOLOService:
                     "final_map": results_dict.get("final_map", 0.0),
                     "train_time": results_dict.get("train_time", 0.0),
                     "val_time": results_dict.get("val_time", 0.0),
+                    # Adicionando novas métricas
+                    "precision": results_dict.get("metrics/precision(B)", 0.0),
+                    "recall": results_dict.get("metrics/recall(B)", 0.0),
+                    "f1_score": results_dict.get("metrics/f1(B)", 0.0),
+                    "best_precision": results_dict.get("best_precision", 0.0),
+                    "best_recall": results_dict.get("best_recall", 0.0),
+                    "best_f1_score": results_dict.get("best_f1", 0.0)
                 }
             else:
                 # Se results_dict não existir, usar valores padrão
@@ -510,12 +547,30 @@ class YOLOService:
                     "final_map": 0.0,
                     "train_time": 0.0,
                     "val_time": 0.0,
+                    # Adicionando novas métricas com valores padrão
+                    "precision": 0.0,
+                    "recall": 0.0,
+                    "f1_score": 0.0,
+                    "best_precision": 0.0,
+                    "best_recall": 0.0,
+                    "best_f1_score": 0.0
                 }
             
             # Registrar métricas obtidas
             logger.info(f"Métricas de treinamento obtidas: {metrics}")
             
-            return metrics
+            # Registrar os resultados
+            trial_result = {
+                "params": processed_params,
+                "metrics": {
+                    **metrics,  # Incluir todas as métricas existentes
+                    "precision": metrics.get("precision", 0.0),
+                    "recall": metrics.get("recall", 0.0),
+                    "f1_score": metrics.get("f1_score", 0.0)
+                }
+            }
+            
+            return trial_result
             
         except Exception as e:
             print(f"Erro durante treinamento: {str(e)}")
