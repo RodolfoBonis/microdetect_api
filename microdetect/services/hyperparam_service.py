@@ -155,62 +155,53 @@ class HyperparamService:
                     last_reported_epoch = -1  # Reset do controle de épocas ao começar um novo trial
                     logger.info(f"Novo trial iniciado: {current_trial}/{search.iterations}")
                 
+                # No _monitor_search_progress em hyperparam_service.py
+                # Precisamos corrigir a lógica para pegar o trial correto
+                
                 # Verificar progresso da época dentro do trial atual
                 if task.info and isinstance(task.info, dict):
                     # Extrair informações de época do info da task
                     current_epoch = task.info.get("epoch", 0)
                     progress_type = task.info.get("progress_type", "")
                     total_epochs = task.info.get("total_epochs", 100)
-                    logger.debug(f"Task info: epoch={current_epoch}, tipo={progress_type}")
-                    
+                
+                    # Pegar o número do trial diretamente das informações da task
+                    # current_trial = len(search.trials_data or [])  # Esse é o problema
+                    current_trial = task.info.get("current_trial", 0)  # Usar o valor da task
+                
+                    # Garantir que o trial esteja correto
+                    if current_trial == 0 and len(search.trials_data or []) > 0:
+                        current_trial = len(search.trials_data)
+                
                     # Sempre enviar atualizações de época
                     if progress_type == "epoch" or progress_type == "epoch_in_trial":
                         last_reported_epoch = current_epoch
-                        logger.info(f"Trial {current_trial}: Progresso época: {current_epoch}, tipo={progress_type}")
-                        
-                        # Debug valores brutos
-                        logger.info(f"Valores brutos: current_trial={current_trial}, search.iterations={search.iterations}, current_epoch={current_epoch}, total_epochs={total_epochs}")
-                        
-                        # Nova fórmula simplificada para percent_complete
-                        # Garantir que current_trial seja pelo menos 1 para cálculos
-                        trial_idx = max(1, current_trial)  # Usar 1 para o primeiro trial
-                        
-                        # Calcular progresso baseado no índice do trial (1-based) e na proporção da época atual
-                        # Para 5 trials, cada um vale 20% do progresso
-                        trial_percent = (trial_idx - 1) * (100 / search.iterations)
-                        epoch_percent = (current_epoch / max(1, total_epochs)) * (100 / search.iterations)
-                        
-                        # Somar os dois componentes do progresso
+                
+                        # Calcular o progresso geral de forma correta
+                        # A fórmula deve refletir o progresso atual baseado no trial e época atuais
+                        trial_percent = ((current_trial - 1) / search.iterations) * 100
+                        epoch_percent = (current_epoch / total_epochs) * (100 / search.iterations)
                         percent_complete = trial_percent + epoch_percent
-                        
-                        # Garantir que seja pelo menos 1 se estiver em andamento, para feedback visual
-                        if percent_complete < 1 and current_epoch > 0:
-                            percent_complete = 1
-                            
-                        # Converter para inteiro mantendo arredondamento correto
-                        percent_complete = int(round(percent_complete))
-                        
+                
                         # Garantir limites
                         percent_complete = max(0, min(100, percent_complete))
-                        
-                        logger.info(f"Cálculo detalhado: trial_idx={trial_idx}, trial_percent={trial_percent:.2f}%, epoch_percent={epoch_percent:.2f}%, final={percent_complete}%")
-                        
-                        # Enviar atualização detalhada via WebSocket
+                
+                        # Enviar atualização detalhada via WebSocket com valores corretos
                         await send_hyperparam_update(
                             str(search_id),
                             {
                                 "status": search.status,
-                                "trials": search.trials_data or [],
+                                "trials": search.trials_data or [],  # Enviar todos os trials
                                 "best_params": search.best_params or {},
                                 "best_metrics": search.best_metrics or {},
                                 "current_trial": current_trial,
                                 "total_trials": search.iterations,
                                 "progress": {
-                                    "trial": current_trial,
+                                    "trial": current_trial,  # Usar o número correto do trial
                                     "total_trials": search.iterations,
                                     "current_epoch": current_epoch,
                                     "total_epochs": total_epochs,
-                                    "percent_complete": percent_complete
+                                    "percent_complete": int(round(percent_complete))
                                 },
                                 "current_trial_info": task.info
                             }
@@ -368,4 +359,4 @@ class HyperparamService:
         Fechar a sessão do banco quando o serviço for destruído
         """
         if hasattr(self, '_db'):
-            self._db.close() 
+            self._db.close()
